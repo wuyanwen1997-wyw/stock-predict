@@ -1,0 +1,68 @@
+{
+  "feature_names": [
+    "ret_1",
+    "ret_5",
+    "ret_10",
+    "ma5_ratio",
+    "ma10_ratio",
+    "ma20_ratio",
+    "ma5_ma20",
+    "rsi14",
+    "volume_ratio",
+    "volatility",
+    "range_pct",
+    "close_pos",
+    "macd_hist",
+    "kdj_j",
+    "boll_pct",
+    "ma_align",
+    "north_flow_1d",
+    "north_flow_5d",
+    "north_flow_pct",
+    "north_hold_ratio"
+  ],
+  "class_order": [
+    "down",
+    "flat",
+    "up"
+  ],
+  "class_ids": [
+    0,
+    1,
+    2
+  ],
+  "flat_threshold": 0.003,
+  "test_accuracy": 0.4349,
+  "cv_best_score": 0.4,
+  "best_params": {
+    "subsample": 0.7,
+    "reg_lambda": 0.1,
+    "reg_alpha": 0.5,
+    "num_leaves": 47,
+    "n_estimators": 500,
+    "min_child_samples": 20,
+    "max_depth": 7,
+    "learning_rate": 0.03,
+    "colsample_bytree": 0.8
+  },
+  "class_weights": {
+    "0": 0.7746,
+    "1": 1.9516,
+    "2": 0.8356
+  },
+  "flat_class_weight_boost": 1.0,
+  "akshare_use_flow_amounts": false,
+  "north_flow_sources": {
+    "akshare": 98,
+    "eastmoney": 0,
+    "hold_only": 1,
+    "none": 0
+  },
+  "train_stocks": 100,
+  "samples": 28215,
+  "yealink_300628_eval": {
+    "accuracy": 0.3719,
+    "flat_pred_ratio": 0.1754,
+    "samples": 285
+  }
+}

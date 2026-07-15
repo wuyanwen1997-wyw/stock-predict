@@ -1,20 +1,15 @@
 import { motion } from "framer-motion";
-import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { cn, marketLabel } from "@/lib/utils";
+import { cn, formatPct, formatPrice, marketLabel } from "@/lib/utils";
 import { useStockStore } from "@/stores/stockStore";
 
 export function WatchlistPage() {
   const navigate = useNavigate();
-  const stocks = useStockStore((s) => s.stocks);
   const watchlist = useStockStore((s) => s.watchlist);
   const selectStock = useStockStore((s) => s.selectStock);
   const toggleWatchlist = useStockStore((s) => s.toggleWatchlist);
 
-  const watched = useMemo(
-    () => stocks.filter((s) => watchlist.includes(s.code)),
-    [stocks, watchlist],
-  );
+  const watched = watchlist;
 
   return (
     <div className="p-6 lg:p-8">
@@ -52,10 +47,26 @@ export function WatchlistPage() {
                   <div className="text-xs text-slate-500">
                     {stock.code} · {stock.sector}
                   </div>
+                  {stock.price != null && (
+                    <div className="mt-1 font-mono text-sm tabular-nums text-slate-300">
+                      ¥{formatPrice(stock.price)}
+                      {stock.change_pct != null && (
+                        <span
+                          className={cn(
+                            "ml-2 text-xs",
+                            stock.change_pct > 0 && "text-rose-400",
+                            stock.change_pct < 0 && "text-emerald-400",
+                          )}
+                        >
+                          {formatPct(stock.change_pct)}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <button
                   type="button"
-                  onClick={() => toggleWatchlist(stock.code)}
+                  onClick={() => toggleWatchlist(stock)}
                   className="text-amber-400 transition hover:text-amber-300"
                 >
                   ★

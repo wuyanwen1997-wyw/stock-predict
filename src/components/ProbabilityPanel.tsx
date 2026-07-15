@@ -1,8 +1,10 @@
 import { motion } from "framer-motion";
-import type { PredictionResult } from "@/types";
+import { cn } from "@/lib/utils";
+import type { BacktestResult, PredictionResult } from "@/types";
 
 interface Props {
   prediction: PredictionResult;
+  backtest?: BacktestResult | null;
 }
 
 function ArcGauge({
@@ -69,72 +71,132 @@ function ArcGauge({
   );
 }
 
-export function ProbabilityPanel({ prediction }: Props) {
-  const { up_probability, down_probability, flat_probability, confidence } =
-    prediction;
+export function ProbabilityPanel({ prediction, backtest }: Props) {
+  const {
+    up_probability,
+    down_probability,
+    confidence,
+    predicted,
+    high_confidence,
+    high_confidence_threshold,
+  } = prediction;
+
+  const bullish = predicted === "up";
+  const leadProb = Math.max(up_probability, down_probability);
 
   return (
-    <div className="rounded-2xl border border-white/5 bg-slate-900/50 p-6 backdrop-blur-sm">
-      <div className="mb-6 flex items-start justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-100">明日涨跌概率</h2>
-          <p className="mt-1 text-sm text-slate-500">
-            预测日期 {prediction.predict_date}
-          </p>
-        </div>
-        <div className="rounded-full border border-cyan-500/20 bg-cyan-500/10 px-3 py-1 text-xs text-cyan-300">
-          置信度 {confidence.toFixed(1)}%
-        </div>
-      </div>
+    <div className="space-y-4">
+      {high_confidence && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          className={cn(
+            "rounded-2xl border px-5 py-4",
+            bullish
+              ? "border-emerald-500/30 bg-emerald-500/10"
+              : "border-rose-500/30 bg-rose-500/10",
+          )}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div
+                className={cn(
+                  "text-lg font-semibold",
+                  bullish ? "text-emerald-300" : "text-rose-300",
+                )}
+              >
+                高置信{bullish ? "看涨" : "看跌"}
+              </div>
+              <p className="mt-1 text-xs text-slate-400">
+                领先侧概率 {leadProb.toFixed(1)}% ≥ 阈值 {high_confidence_threshold.toFixed(0)}%
+              </p>
+            </div>
+            <div className="text-right">
+              {backtest && backtest.high_confidence_samples > 0 ? (
+                <>
+                  <div
+                    className={cn(
+                      "font-mono text-2xl font-bold tabular-nums",
+                      bullish ? "text-emerald-300" : "text-rose-300",
+                    )}
+                  >
+                    {backtest.high_confidence_accuracy.toFixed(1)}%
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    历史高置信准确率 · {backtest.high_confidence_samples} 次
+                  </div>
+                </>
+              ) : (
+                <div className="text-xs text-slate-500">历史高置信样本不足</div>
+              )}
+            </div>
+          </div>
+        </motion.div>
+      )}
 
-      <div className="flex flex-wrap items-center justify-around gap-4">
-        <ArcGauge
-          value={up_probability}
-          color="#34d399"
-          label="上涨"
-          delay={0}
-        />
-        <ArcGauge
-          value={down_probability}
-          color="#f87171"
-          label="下跌"
-          delay={0.15}
-        />
-        <ArcGauge
-          value={flat_probability}
-          color="#94a3b8"
-          label="平盘"
-          delay={0.3}
-        />
-      </div>
+      <div className="rounded-2xl border border-white/5 bg-slate-900/50 p-6 backdrop-blur-sm">
+        <div className="mb-6 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-100">明日涨跌概率</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              预测日期 {prediction.predict_date} · 二分类（涨 / 跌）
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {high_confidence && (
+              <span
+                className={cn(
+                  "rounded-full border px-3 py-1 text-xs",
+                  bullish
+                    ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-300"
+                    : "border-rose-500/30 bg-rose-500/15 text-rose-300",
+                )}
+              >
+                高置信
+              </span>
+            )}
+            <div className="rounded-full border border-cyan-500/20 bg-cyan-500/10 px-3 py-1 text-xs text-cyan-300">
+              置信度 {confidence.toFixed(1)}%
+            </div>
+          </div>
+        </div>
 
-      <div className="mt-6 h-3 overflow-hidden rounded-full bg-slate-800">
-        <div className="flex h-full">
-          <motion.div
-            initial={{ width: 0 }}
-            animate={{ width: `${up_probability}%` }}
-            transition={{ delay: 0.5, duration: 0.8 }}
-            className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400"
+        <div className="flex flex-wrap items-center justify-around gap-4">
+          <ArcGauge
+            value={up_probability}
+            color="#34d399"
+            label="上涨"
+            delay={0}
           />
-          <motion.div
-            initial={{ width: 0 }}
-            animate={{ width: `${flat_probability}%` }}
-            transition={{ delay: 0.6, duration: 0.8 }}
-            className="h-full bg-slate-500"
-          />
-          <motion.div
-            initial={{ width: 0 }}
-            animate={{ width: `${down_probability}%` }}
-            transition={{ delay: 0.7, duration: 0.8 }}
-            className="h-full bg-gradient-to-r from-red-400 to-red-500"
+          <ArcGauge
+            value={down_probability}
+            color="#f87171"
+            label="下跌"
+            delay={0.15}
           />
         </div>
-      </div>
 
-      <div className="mt-3 flex justify-between text-xs text-slate-500">
-        <span>涨 {up_probability.toFixed(1)}%</span>
-        <span>平 {flat_probability.toFixed(1)}%</span>
-        <span>跌 {down_probability.toFixed(1)}%</span>
+        <div className="mt-6 h-3 overflow-hidden rounded-full bg-slate-800">
+          <div className="flex h-full">
+            <motion.div
+              initial={{ width: 0 }}
+              animate={{ width: `${up_probability}%` }}
+              transition={{ delay: 0.5, duration: 0.8 }}
+              className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400"
+            />
+            <motion.div
+              initial={{ width: 0 }}
+              animate={{ width: `${down_probability}%` }}
+              transition={{ delay: 0.7, duration: 0.8 }}
+              className="h-full bg-gradient-to-r from-red-400 to-red-500"
+            />
+          </div>
+        </div>
+
+        <div className="mt-3 flex justify-between text-xs text-slate-500">
+          <span>涨 {up_probability.toFixed(1)}%</span>
+          <span>跌 {down_probability.toFixed(1)}%</span>
+        </div>
       </div>
     </div>
   );

@@ -209,10 +209,10 @@ export function StockSelector() {
                 key={`${stock.market}-${stock.code}`}
                 stock={stock}
                 active={selectedStock?.code === stock.code}
-                starred={watchlist.includes(stock.code)}
+                starred={watchlist.some((s) => s.code === stock.code)}
                 index={i}
                 onSelect={() => selectStock(stock)}
-                onToggleWatchlist={() => toggleWatchlist(stock.code)}
+                onToggleWatchlist={() => toggleWatchlist(stock)}
               />
             ))
           )}

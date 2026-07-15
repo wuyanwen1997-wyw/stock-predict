@@ -1,5 +1,8 @@
-use crate::models::{AlgorithmInfo, PredictionResult, Stock, StocksPayload};
-use crate::{market, predictor};
+use crate::models::{
+    AlgorithmInfo, AnalysisResult, BacktestResult, DailyBar, PredictionResult, Stock, StocksPayload,
+};
+use crate::strategy::{self, StrategyCompose, StrategySourceInfo};
+use crate::{backtest, market, predictor};
 use std::collections::HashSet;
 use std::fs;
 use tauri::AppHandle;
@@ -42,46 +45,115 @@ pub async fn search_stocks(query: String, limit: Option<usize>) -> Result<Vec<St
 }
 
 #[tauri::command]
-pub async fn predict_stock(stock: Stock, algorithm: Option<String>) -> Result<PredictionResult, String> {
-    let algo = algorithm.unwrap_or_else(|| "placeholder_v1".to_string());
+pub fn list_strategy_sources() -> Vec<StrategySourceInfo> {
+    strategy::catalog()
+}
 
-    let quotes = market::fetch_stock_quotes(&[stock.clone()]).await?;
-    let quote = quotes
-        .get(&stock.code)
-        .ok_or_else(|| format!("未找到 {} 的行情数据", stock.code))?;
+#[tauri::command]
+pub fn default_strategy_compose() -> StrategyCompose {
+    strategy::default_compose()
+}
 
+/// 一次请求完成：行情 + K线 + 组合预测 + 回测
+#[tauri::command]
+pub async fn analyze_stock(
+    stock: Stock,
+    algorithm: Option<String>,
+    lookback_days: Option<u32>,
+    compose: Option<StrategyCompose>,
+) -> Result<AnalysisResult, String> {
+    let mut compose = strategy::normalize_compose(&compose.unwrap_or_else(strategy::default_compose));
+    if let Some(lb) = lookback_days {
+        compose.lookback_days = lb;
+    }
+    let lookback = compose.lookback_days;
+    let fetch_limit = (lookback + 80).max(120);
+
+    let stock_list = [stock.clone()];
+    let (quotes_result, klines_result) = tokio::join!(
+        market::fetch_stock_quotes(&stock_list),
+        market::fetch_daily_klines(&stock, fetch_limit),
+    );
+
+    let quotes = quotes_result?;
+    let klines = klines_result?;
+
+    let quote = quotes.get(&stock.code);
     let current_price = quote
-        .price
-        .or(quote.prev_close)
+        .and_then(|q| q.price.or(q.prev_close))
+        .or_else(|| klines.last().map(|b| b.close))
         .filter(|p| *p > 0.0)
         .ok_or_else(|| format!("{} 暂无有效价格", stock.name))?;
 
-    let klines = market::fetch_daily_klines(&stock, 60).await.unwrap_or_default();
-    let volatility = market::calc_volatility(&klines);
+    let prediction = if algorithm.as_deref() == Some("placeholder_v1") {
+        predictor::predict(&stock, "placeholder_v1", &klines, current_price, lookback)
+    } else {
+        predictor::predict_compose(&stock, &klines, current_price, &compose).await
+    };
 
-    Ok(predictor::predict(&stock, &algo, current_price, volatility))
+    let backtest_result = backtest::run_compose(&stock, &klines, &compose);
+
+    let chart_len = 90u32.max(lookback);
+    let chart_klines = if klines.len() > chart_len as usize {
+        klines[klines.len() - chart_len as usize..].to_vec()
+    } else {
+        klines.clone()
+    };
+
+    Ok(AnalysisResult {
+        prediction,
+        klines: chart_klines,
+        backtest: backtest_result,
+    })
+}
+
+#[tauri::command]
+pub async fn predict_stock(
+    stock: Stock,
+    algorithm: Option<String>,
+    lookback_days: Option<u32>,
+    compose: Option<StrategyCompose>,
+) -> Result<PredictionResult, String> {
+    let result = analyze_stock(stock, algorithm, lookback_days, compose).await?;
+    Ok(result.prediction)
+}
+
+#[tauri::command]
+pub async fn get_stock_klines(stock: Stock, limit: Option<u32>) -> Result<Vec<DailyBar>, String> {
+    market::fetch_daily_klines(&stock, limit.unwrap_or(90)).await
+}
+
+#[tauri::command]
+pub async fn backtest_stock(
+    stock: Stock,
+    algorithm: Option<String>,
+    days: Option<u32>,
+    compose: Option<StrategyCompose>,
+) -> Result<BacktestResult, String> {
+    let mut compose = strategy::normalize_compose(&compose.unwrap_or_else(strategy::default_compose));
+    if let Some(d) = days {
+        compose.lookback_days = d;
+    }
+    let _ = algorithm;
+    let fetch_limit = (compose.lookback_days + 80).max(120);
+    let bars = market::fetch_daily_klines(&stock, fetch_limit).await?;
+    Ok(backtest::run_compose(&stock, &bars, &compose))
 }
 
 #[tauri::command]
 pub fn list_algorithms() -> Vec<AlgorithmInfo> {
     vec![
         AlgorithmInfo {
-            id: "placeholder_v1".into(),
-            name: "占位模型 v1".into(),
-            description: "基于真实收盘价与历史波动率的演示算法，用于 UI 预览。后续可接入真实 ML 模型。".into(),
+            id: "compose".into(),
+            name: "组合策略".into(),
+            description: "按股票自定义启用信号源并加权融合（技术/舆情/宏观）。".into(),
             enabled: true,
         },
         AlgorithmInfo {
-            id: "lstm_v2".into(),
-            name: "LSTM v2（预留）".into(),
-            description: "长短期记忆网络时序预测，尚未接入。".into(),
-            enabled: false,
-        },
-        AlgorithmInfo {
-            id: "xgboost_v1".into(),
-            name: "XGBoost v1（预留）".into(),
-            description: "梯度提升树因子模型，尚未接入。".into(),
-            enabled: false,
+            id: "placeholder_v1".into(),
+            name: "占位模型 v1".into(),
+            description: "伪随机演示算法，仅用于对比测试。".into(),
+            enabled: true,
         },
     ]
 }

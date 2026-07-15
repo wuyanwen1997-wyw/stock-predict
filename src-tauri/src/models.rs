@@ -57,6 +57,20 @@ pub struct ScenarioForecast {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalContribution {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    pub up_probability: f64,
+    pub down_probability: f64,
+    pub confidence: f64,
+    pub weight: f64,
+    pub weight_normalized: f64,
+    pub note: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PredictionResult {
     pub stock: Stock,
     pub predict_date: String,
@@ -65,16 +79,62 @@ pub struct PredictionResult {
     pub down_probability: f64,
     pub flat_probability: f64,
     pub confidence: f64,
+    pub predicted: String,
+    pub high_confidence: bool,
+    pub high_confidence_threshold: f64,
     pub algorithm: String,
     pub high_open: ScenarioForecast,
     pub low_open: ScenarioForecast,
     pub summary: String,
+    #[serde(default)]
+    pub signals: Vec<SignalContribution>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StocksPayload {
     pub stocks: Vec<Stock>,
     pub hot_stocks: Vec<Stock>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacktestRecord {
+    pub date: String,
+    pub predict_date: String,
+    pub close_price: f64,
+    pub next_close: f64,
+    pub change_pct: f64,
+    pub predicted: String,
+    pub actual: String,
+    pub up_probability: f64,
+    pub down_probability: f64,
+    pub confidence: f64,
+    pub high_confidence: bool,
+    pub correct: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacktestResult {
+    pub stock: Stock,
+    pub algorithm: String,
+    pub total_samples: u32,
+    pub direction_accuracy: f64,
+    pub actionable_accuracy: f64,
+    pub up_hit_rate: f64,
+    pub down_hit_rate: f64,
+    pub high_confidence_samples: u32,
+    pub high_confidence_accuracy: f64,
+    pub high_confidence_threshold: f64,
+    pub flat_threshold_pct: f64,
+    pub lookback_days: u32,
+    pub summary: String,
+    pub records: Vec<BacktestRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalysisResult {
+    pub prediction: PredictionResult,
+    pub klines: Vec<DailyBar>,
+    pub backtest: BacktestResult,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

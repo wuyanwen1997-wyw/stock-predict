@@ -1,15 +1,27 @@
 import { motion } from "framer-motion";
+import { BacktestPanel } from "@/components/BacktestPanel";
+import { KlineChart } from "@/components/KlineChart";
 import { ProbabilityPanel } from "@/components/ProbabilityPanel";
 import { ScenarioChart } from "@/components/ScenarioChart";
+import { SignalBreakdown } from "@/components/SignalBreakdown";
 import { StockSelector } from "@/components/StockSelector";
-import { formatPrice } from "@/lib/utils";
+import { StrategyComposer } from "@/components/StrategyComposer";
+import { cn, formatPrice } from "@/lib/utils";
 import { useStockStore } from "@/stores/stockStore";
+
+export const LOOKBACK_OPTIONS = [25, 50, 60, 90, 120] as const;
 
 export function PredictPage() {
   const selectedStock = useStockStore((s) => s.selectedStock);
   const prediction = useStockStore((s) => s.prediction);
+  const klines = useStockStore((s) => s.klines);
+  const backtest = useStockStore((s) => s.backtest);
   const predicting = useStockStore((s) => s.predicting);
   const loading = useStockStore((s) => s.loading);
+  const loadingKlines = useStockStore((s) => s.loadingKlines);
+  const loadingBacktest = useStockStore((s) => s.loadingBacktest);
+  const lookbackDays = useStockStore((s) => s.lookbackDays);
+  const setLookbackDays = useStockStore((s) => s.setLookbackDays);
   const runPrediction = useStockStore((s) => s.runPrediction);
 
   if (loading) {
@@ -33,25 +45,51 @@ export function PredictPage() {
               智能预测
             </h1>
             <p className="mt-2 max-w-xl text-sm leading-relaxed text-slate-400">
-              选择目标股票，基于实时行情与历史波动率，查看明日涨跌概率及高开 / 低开场景预测。
+              为每只股票组合技术面 / 消息面 / 政策面 / 美股等信号源，配置自动保存。
             </p>
           </div>
 
-          {selectedStock && (
-            <button
-              type="button"
-              onClick={() => void runPrediction()}
-              disabled={predicting}
-              className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-300 transition hover:bg-emerald-500/20 disabled:opacity-50"
-            >
-              {predicting ? "分析中..." : "重新预测"}
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-1.5 rounded-xl border border-white/5 bg-slate-900/50 p-1">
+              <span className="px-2 text-xs text-slate-500">回看</span>
+              {LOOKBACK_OPTIONS.map((days) => (
+                <button
+                  key={days}
+                  type="button"
+                  onClick={() => setLookbackDays(days)}
+                  disabled={predicting}
+                  className={cn(
+                    "rounded-lg px-2.5 py-1.5 text-xs font-medium transition",
+                    lookbackDays === days
+                      ? "bg-cyan-500/20 text-cyan-300"
+                      : "text-slate-400 hover:bg-white/5 hover:text-slate-200",
+                    predicting && "opacity-50",
+                  )}
+                >
+                  {days}日
+                </button>
+              ))}
+            </div>
+
+            {selectedStock && (
+              <button
+                type="button"
+                onClick={() => void runPrediction()}
+                disabled={predicting}
+                className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-300 transition hover:bg-emerald-500/20 disabled:opacity-50"
+              >
+                {predicting ? "分析中..." : "重新预测"}
+              </button>
+            )}
+          </div>
         </div>
       </motion.header>
 
       <div className="grid gap-6 xl:grid-cols-[340px_1fr]">
-        <StockSelector />
+        <div className="space-y-4">
+          <StockSelector />
+          <StrategyComposer />
+        </div>
 
         <div className="space-y-6">
           {predicting && !prediction ? (
@@ -75,7 +113,7 @@ export function PredictPage() {
                   </div>
                   <div className="mt-0.5 text-sm text-slate-500">
                     {prediction.stock.market}.{prediction.stock.code} ·{" "}
-                    {prediction.stock.sector}
+                    {prediction.stock.sector} · 回看 {lookbackDays} 日 · 组合策略
                   </div>
                 </div>
                 <div className="ml-auto text-right">
@@ -86,7 +124,13 @@ export function PredictPage() {
                 </div>
               </motion.div>
 
-              <ProbabilityPanel prediction={prediction} />
+              <ProbabilityPanel prediction={prediction} backtest={backtest} />
+
+              <SignalBreakdown signals={prediction.signals ?? []} />
+
+              <KlineChart bars={klines} loading={loadingKlines} />
+
+              <BacktestPanel result={backtest} loading={loadingBacktest} />
 
               <motion.div
                 initial={{ opacity: 0 }}

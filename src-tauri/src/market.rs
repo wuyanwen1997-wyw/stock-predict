@@ -3,15 +3,42 @@ use std::collections::HashMap;
 
 const QUOTE_URL: &str = "https://push2.eastmoney.com/api/qt/ulist.np/get";
 const KLINE_URL: &str = "https://push2his.eastmoney.com/api/qt/stock/kline/get";
+const TENCENT_KLINE_URL: &str = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get";
+const SINA_KLINE_URL: &str = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData";
 const HOT_URL: &str = "https://emappdata.eastmoney.com/stockrank/getAllCurrentList";
 const SEARCH_URL: &str = "https://searchapi.eastmoney.com/api/suggest/get";
 
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
 fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(12))
-        .user_agent("Mozilla/5.0 StockPredict/0.1")
+        .timeout(std::time::Duration::from_secs(6))
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .user_agent(USER_AGENT)
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))
+}
+
+fn apply_browser_headers(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    builder
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Accept-Language", "zh-CN,zh;q=0.9")
+        .header("Referer", "https://quote.eastmoney.com/")
+}
+
+pub fn to_tencent_symbol(market: &str, code: &str) -> String {
+    match market {
+        "SH" => format!("sh{code}"),
+        _ => format!("sz{code}"),
+    }
+}
+
+pub fn to_sina_symbol(market: &str, code: &str) -> String {
+    match market {
+        "SH" => format!("sh{code}"),
+        _ => format!("sz{code}"),
+    }
 }
 
 pub fn to_secid(market: &str, code: &str) -> String {
@@ -60,8 +87,7 @@ pub async fn fetch_stock_quotes(stocks: &[Stock]) -> Result<HashMap<String, Stoc
         .collect();
 
     let client = client()?;
-    let resp = client
-        .get(QUOTE_URL)
+    let resp = apply_browser_headers(client.get(QUOTE_URL))
         .query(&[
             ("fltt", "2"),
             ("invt", "2"),
@@ -123,13 +149,36 @@ pub async fn fetch_stock_quotes(stocks: &[Stock]) -> Result<HashMap<String, Stoc
     Ok(map)
 }
 
-/// 拉取日线 K 线（最近 N 根）
+/// 拉取日线 K 线（最近 N 根）。优先腾讯/新浪（更快更稳），东财作兜底。
 pub async fn fetch_daily_klines(stock: &Stock, limit: u32) -> Result<Vec<DailyBar>, String> {
+    let mut errors = Vec::new();
+
+    match fetch_tencent_klines(stock, limit).await {
+        Ok(bars) if !bars.is_empty() => return Ok(bars),
+        Ok(_) => errors.push("腾讯日线返回为空".into()),
+        Err(e) => errors.push(e),
+    }
+
+    match fetch_sina_klines(stock, limit).await {
+        Ok(bars) if !bars.is_empty() => return Ok(bars),
+        Ok(_) => errors.push("新浪日线返回为空".into()),
+        Err(e) => errors.push(e),
+    }
+
+    match fetch_em_klines(stock, limit).await {
+        Ok(bars) if !bars.is_empty() => return Ok(bars),
+        Ok(_) => errors.push("东方财富日线返回为空".into()),
+        Err(e) => errors.push(e),
+    }
+
+    Err(format!("日线获取失败: {}", errors.join("；")))
+}
+
+async fn fetch_em_klines(stock: &Stock, limit: u32) -> Result<Vec<DailyBar>, String> {
     let client = client()?;
     let secid = to_secid(&stock.market, &stock.code);
 
-    let resp = client
-        .get(KLINE_URL)
+    let resp = apply_browser_headers(client.get(KLINE_URL))
         .query(&[
             ("secid", secid.as_str()),
             ("fields1", "f1,f2,f3,f4,f5,f6"),
@@ -142,13 +191,61 @@ pub async fn fetch_daily_klines(stock: &Stock, limit: u32) -> Result<Vec<DailyBa
         ])
         .send()
         .await
-        .map_err(|e| format!("日线请求失败: {e}"))?
+        .map_err(|e| format!("东方财富日线请求失败: {e}"))?
         .error_for_status()
-        .map_err(|e| format!("日线响应异常: {e}"))?
+        .map_err(|e| format!("东方财富日线响应异常: {e}"))?
         .json::<serde_json::Value>()
         .await
-        .map_err(|e| format!("日线解析失败: {e}"))?;
+        .map_err(|e| format!("东方财富日线解析失败: {e}"))?;
 
+    parse_em_klines(&resp)
+}
+
+async fn fetch_tencent_klines(stock: &Stock, limit: u32) -> Result<Vec<DailyBar>, String> {
+    let client = client()?;
+    let symbol = to_tencent_symbol(&stock.market, &stock.code);
+    let param = format!("{symbol},day,,,{limit},qfq");
+
+    let resp = apply_browser_headers(client.get(TENCENT_KLINE_URL))
+        .header("Referer", "https://gu.qq.com/")
+        .query(&[("param", param.as_str())])
+        .send()
+        .await
+        .map_err(|e| format!("腾讯日线请求失败: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("腾讯日线响应异常: {e}"))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("腾讯日线解析失败: {e}"))?;
+
+    parse_tencent_klines(&resp, &symbol, limit)
+}
+
+async fn fetch_sina_klines(stock: &Stock, limit: u32) -> Result<Vec<DailyBar>, String> {
+    let client = client()?;
+    let symbol = to_sina_symbol(&stock.market, &stock.code);
+
+    let resp = apply_browser_headers(client.get(SINA_KLINE_URL))
+        .header("Referer", "https://finance.sina.com.cn/")
+        .query(&[
+            ("symbol", symbol.as_str()),
+            ("scale", "240"),
+            ("ma", "no"),
+            ("datalen", &limit.to_string()),
+        ])
+        .send()
+        .await
+        .map_err(|e| format!("新浪日线请求失败: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("新浪日线响应异常: {e}"))?
+        .json::<Vec<serde_json::Value>>()
+        .await
+        .map_err(|e| format!("新浪日线解析失败: {e}"))?;
+
+    parse_sina_klines(&resp)
+}
+
+fn parse_em_klines(resp: &serde_json::Value) -> Result<Vec<DailyBar>, String> {
     let klines = resp
         .pointer("/data/klines")
         .and_then(|v| v.as_array())
@@ -175,6 +272,77 @@ pub async fn fetch_daily_klines(stock: &Stock, limit: u32) -> Result<Vec<DailyBa
     }
 
     Ok(bars)
+}
+
+fn parse_tencent_klines(
+    resp: &serde_json::Value,
+    symbol: &str,
+    limit: u32,
+) -> Result<Vec<DailyBar>, String> {
+    let key = format!("/data/{symbol}/qfqday");
+    let rows = resp
+        .pointer(&key)
+        .or_else(|| resp.pointer("/data").and_then(|d| d.get(symbol)).and_then(|s| s.get("qfqday")))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut bars = Vec::with_capacity(rows.len());
+    for row in rows {
+        let parts = row.as_array().cloned().unwrap_or_default();
+        if parts.len() < 6 {
+            continue;
+        }
+        let date = parts[0].as_str().unwrap_or_default();
+        bars.push(DailyBar {
+            date: date.to_string(),
+            open: parse_json_f64(&parts[1]),
+            close: parse_json_f64(&parts[2]),
+            high: parse_json_f64(&parts[3]),
+            low: parse_json_f64(&parts[4]),
+            volume: parse_json_f64(&parts[5]),
+            change_pct: None,
+        });
+    }
+
+    if bars.len() > limit as usize {
+        bars = bars.split_off(bars.len() - limit as usize);
+    }
+
+    if bars.is_empty() {
+        return Err("腾讯日线返回为空".into());
+    }
+
+    Ok(bars)
+}
+
+fn parse_sina_klines(items: &[serde_json::Value]) -> Result<Vec<DailyBar>, String> {
+    let mut bars = Vec::with_capacity(items.len());
+    for item in items {
+        let date = item.get("day").and_then(|v| v.as_str()).unwrap_or_default();
+        if date.is_empty() {
+            continue;
+        }
+        bars.push(DailyBar {
+            date: date.to_string(),
+            open: item.get("open").and_then(parse_f64).unwrap_or(0.0),
+            close: item.get("close").and_then(parse_f64).unwrap_or(0.0),
+            high: item.get("high").and_then(parse_f64).unwrap_or(0.0),
+            low: item.get("low").and_then(parse_f64).unwrap_or(0.0),
+            volume: item.get("volume").and_then(parse_f64).unwrap_or(0.0),
+            change_pct: None,
+        });
+    }
+
+    if bars.is_empty() {
+        return Err("新浪日线返回为空".into());
+    }
+
+    Ok(bars)
+}
+
+fn parse_json_f64(v: &serde_json::Value) -> f64 {
+    parse_f64(v).unwrap_or(0.0)
 }
 
 /// 拉取人气榜热门股票（含名称与行情）
@@ -409,5 +577,11 @@ mod tests {
     fn parse_market_prefix() {
         assert_eq!(parse_market_from_sc("SH600519"), ("SH".into(), "600519".into()));
         assert_eq!(parse_market_from_sc("SZ000858"), ("SZ".into(), "000858".into()));
+    }
+
+    #[test]
+    fn tencent_symbol_mapping() {
+        assert_eq!(to_tencent_symbol("SH", "600519"), "sh600519");
+        assert_eq!(to_tencent_symbol("SZ", "300628"), "sz300628");
     }
 }

@@ -1,7 +1,10 @@
+pub mod backtest;
 pub mod commands;
+pub mod factor_model;
 pub mod market;
 pub mod models;
 pub mod predictor;
+pub mod strategy;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -9,8 +12,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::load_stocks,
             commands::search_stocks,
+            commands::analyze_stock,
             commands::predict_stock,
+            commands::get_stock_klines,
+            commands::backtest_stock,
             commands::list_algorithms,
+            commands::list_strategy_sources,
+            commands::default_strategy_compose,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
