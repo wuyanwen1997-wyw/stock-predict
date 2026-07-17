@@ -19,6 +19,123 @@ import type {
 
 const STRATEGY_MAP_KEY = "strategy_compose_by_stock_v1";
 
+/** 统一用 6 位数字代码做存储键，避免 SH510980 / 510980 不一致 */
+function composeKey(code: string): string {
+  const digits = code.replace(/\D/g, "");
+  if (digits.length >= 6) return digits.slice(-6);
+  if (digits.length > 0) return digits.padStart(6, "0");
+  return code.trim();
+}
+
+function cloneCompose(c: StrategyCompose): StrategyCompose {
+  return {
+    lookback_days: c.lookback_days,
+    sources: c.sources.map((s) => ({ ...s })),
+  };
+}
+
+function isValidCompose(v: unknown): v is StrategyCompose {
+  if (!v || typeof v !== "object") return false;
+  const c = v as StrategyCompose;
+  return (
+    typeof c.lookback_days === "number" &&
+    Array.isArray(c.sources) &&
+    c.sources.every(
+      (s) =>
+        s &&
+        typeof s.id === "string" &&
+        typeof s.enabled === "boolean" &&
+        typeof s.weight === "number",
+    )
+  );
+}
+
+/** 用默认目录补齐缺失信号源，保留用户已设启用/权重 */
+function mergeWithDefault(
+  saved: StrategyCompose | null | undefined,
+  defaultCompose: StrategyCompose | null,
+  fallbackLookback: number,
+): StrategyCompose {
+  if (!defaultCompose) {
+    return saved
+      ? cloneCompose(saved)
+      : { lookback_days: fallbackLookback, sources: [] };
+  }
+  if (!saved) {
+    const c = cloneCompose(defaultCompose);
+    c.lookback_days = fallbackLookback;
+    return c;
+  }
+
+  const byId = new Map(saved.sources.map((s) => [s.id, s]));
+  const sources = defaultCompose.sources.map((def) => {
+    const prev = byId.get(def.id);
+    return prev
+      ? { id: def.id, enabled: prev.enabled, weight: prev.weight }
+      : { ...def };
+  });
+  // 保留默认里没有、但用户旧配置里有的源
+  for (const s of saved.sources) {
+    if (!sources.some((x) => x.id === s.id)) sources.push({ ...s });
+  }
+
+  return {
+    lookback_days: saved.lookback_days || fallbackLookback,
+    sources,
+  };
+}
+
+function loadStrategyMap(): Record<string, StrategyCompose> {
+  try {
+    const raw = localStorage.getItem(STRATEGY_MAP_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return {};
+
+    const out: Record<string, StrategyCompose> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (!isValidCompose(v)) continue;
+      const key = composeKey(k);
+      // 同一股票多种键时，后写覆盖前写；优先保留更完整的
+      if (!out[key] || v.sources.length >= out[key].sources.length) {
+        out[key] = cloneCompose(v);
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** 读盘合并后再写，避免内存 map 为空时覆盖掉其它股票配置 */
+function upsertStrategyCompose(
+  code: string,
+  compose: StrategyCompose,
+  memoryMap: Record<string, StrategyCompose>,
+): Record<string, StrategyCompose> {
+  const key = composeKey(code);
+  const merged = {
+    ...loadStrategyMap(),
+    ...memoryMap,
+    [key]: cloneCompose(compose),
+  };
+  // 去掉未规范化的重复键
+  const normalized: Record<string, StrategyCompose> = {};
+  for (const [k, v] of Object.entries(merged)) {
+    const nk = composeKey(k);
+    normalized[nk] = v;
+  }
+  try {
+    localStorage.setItem(STRATEGY_MAP_KEY, JSON.stringify(normalized));
+  } catch (e) {
+    console.warn("保存信号组合失败", e);
+  }
+  return normalized;
+}
+
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let searchSeq = 0;
+
 interface StockState {
   stocks: Stock[];
   hotStocks: Stock[];
@@ -61,13 +178,6 @@ interface StockState {
   clearSearch: () => void;
 }
 
-function cloneCompose(c: StrategyCompose): StrategyCompose {
-  return {
-    lookback_days: c.lookback_days,
-    sources: c.sources.map((s) => ({ ...s })),
-  };
-}
-
 export const useStockStore = create<StockState>((set, get) => ({
   stocks: [],
   hotStocks: [],
@@ -95,14 +205,34 @@ export const useStockStore = create<StockState>((set, get) => ({
   init: async () => {
     set({ loading: true, error: "" });
     try {
-      const [{ stocks, hot_stocks: hotStocks }, algorithms, strategySources, defaultCompose] =
-        await Promise.all([
-          loadStocks(),
-          listAlgorithms(),
-          listStrategySources(),
-          defaultStrategyCompose(),
-        ]);
-      const hotStocksFromApi = hotStocks;
+      const settled = await Promise.allSettled([
+        loadStocks(),
+        listAlgorithms(),
+        listStrategySources(),
+        defaultStrategyCompose(),
+      ]);
+
+      const stocksPayload =
+        settled[0].status === "fulfilled" ? settled[0].value : { stocks: [], hot_stocks: [] };
+      const stocks = stocksPayload.stocks;
+      const hotStocksFromApi = stocksPayload.hot_stocks ?? [];
+      const algorithms = settled[1].status === "fulfilled" ? settled[1].value : [];
+      const strategySources = settled[2].status === "fulfilled" ? settled[2].value : [];
+      const defaultCompose = settled[3].status === "fulfilled" ? settled[3].value : null;
+
+      const labels = ["股票列表", "算法列表", "信号源", "默认组合"] as const;
+      const failures = settled
+        .map((r, i) =>
+          r.status === "rejected" ? `${labels[i]}: ${String(r.reason)}` : null,
+        )
+        .filter((x): x is string => Boolean(x));
+
+      if (stocks.length === 0) {
+        throw new Error(failures[0] ?? "股票列表为空");
+      }
+
+      const softErrors = failures.filter((f) => !f.startsWith("股票列表"));
+
       let watchlist = loadWatchlist([...stocks, ...hotStocksFromApi]);
       watchlist = await recoverLegacyWatchlist(watchlist);
       const strategyMap = loadStrategyMap();
@@ -111,8 +241,9 @@ export const useStockStore = create<StockState>((set, get) => ({
 
       const savedLookback = Number(localStorage.getItem("lookbackDays"));
       let lookbackDays = [25, 50, 60, 90, 120].includes(savedLookback) ? savedLookback : 50;
-      if (selectedStock && strategyMap[selectedStock.code]?.lookback_days) {
-        lookbackDays = strategyMap[selectedStock.code].lookback_days;
+      if (selectedStock) {
+        const saved = strategyMap[composeKey(selectedStock.code)];
+        if (saved?.lookback_days) lookbackDays = saved.lookback_days;
       }
 
       set({
@@ -126,6 +257,7 @@ export const useStockStore = create<StockState>((set, get) => ({
         watchlist,
         lookbackDays,
         loading: false,
+        error: softErrors.length > 0 ? softErrors.join("；") : "",
       });
     } catch (err) {
       set({ error: String(err), loading: false });
@@ -159,14 +291,9 @@ export const useStockStore = create<StockState>((set, get) => ({
 
   getComposeForStock: (code) => {
     const { strategyMap, defaultCompose, lookbackDays } = get();
-    const saved = strategyMap[code];
-    if (saved) return cloneCompose(saved);
-    if (defaultCompose) {
-      const c = cloneCompose(defaultCompose);
-      c.lookback_days = lookbackDays;
-      return c;
-    }
-    return { lookback_days: lookbackDays, sources: [] };
+    const key = composeKey(code);
+    const saved = strategyMap[key] ?? loadStrategyMap()[key];
+    return mergeWithDefault(saved, defaultCompose, lookbackDays);
   },
 
   updateCompose: (patch) => {
@@ -174,9 +301,10 @@ export const useStockStore = create<StockState>((set, get) => ({
     if (!stock) return;
     const current = get().getComposeForStock(stock.code);
     const next =
-      typeof patch === "function" ? patch(current) : { ...current, ...patch, sources: patch.sources ?? current.sources };
-    const strategyMap = { ...get().strategyMap, [stock.code]: cloneCompose(next) };
-    saveStrategyMap(strategyMap);
+      typeof patch === "function"
+        ? patch(current)
+        : { ...current, ...patch, sources: patch.sources ?? current.sources };
+    const strategyMap = upsertStrategyCompose(stock.code, next, get().strategyMap);
     set({
       strategyMap,
       lookbackDays: next.lookback_days,
@@ -208,8 +336,7 @@ export const useStockStore = create<StockState>((set, get) => ({
     if (!stock || !def) return;
     const next = cloneCompose(def);
     next.lookback_days = get().lookbackDays;
-    const strategyMap = { ...get().strategyMap, [stock.code]: next };
-    saveStrategyMap(strategyMap);
+    const strategyMap = upsertStrategyCompose(stock.code, next, get().strategyMap);
     set({ strategyMap });
     void get().runPrediction();
   },
@@ -271,40 +398,97 @@ export const useStockStore = create<StockState>((set, get) => ({
     set({ watchlist: next });
   },
 
-  setSearchQuery: (query) => set({ searchQuery: query }),
+  setSearchQuery: (query) => {
+    const q = query.trim().toLowerCase();
+    set({ searchQuery: query });
+
+    if (!q) {
+      searchSeq += 1;
+      if (searchTimer) {
+        clearTimeout(searchTimer);
+        searchTimer = null;
+      }
+      set({ searchResults: [], searching: false });
+      return;
+    }
+
+    // Instant local matches (stocks + ETF in bundled list)
+    const local = get()
+      .stocks.filter((s) => {
+        const code = s.code.toLowerCase();
+        const name = s.name.toLowerCase();
+        const sector = s.sector.toLowerCase();
+        return code.includes(q) || name.includes(q) || sector.includes(q);
+      })
+      .slice(0, 20);
+    set({ searchResults: local, searching: true });
+
+    if (searchTimer) clearTimeout(searchTimer);
+    const seq = ++searchSeq;
+    searchTimer = setTimeout(() => {
+      void (async () => {
+        try {
+          const remote = await searchStocks(query.trim(), 12);
+          if (seq !== searchSeq) return;
+          const seen = new Set(remote.map((s) => s.code));
+          const merged = [
+            ...remote,
+            ...local.filter((s) => !seen.has(s.code)),
+          ].slice(0, 24);
+          set({ searchResults: merged, searching: false });
+        } catch (err) {
+          if (seq !== searchSeq) return;
+          // Keep local results; soft-fail remote
+          set({ searching: false, error: String(err) });
+        }
+      })();
+    }, 280);
+  },
 
   runSearch: async () => {
     const q = get().searchQuery.trim();
     if (!q) {
-      set({ searchResults: [] });
+      set({ searchResults: [], searching: false });
       return;
     }
 
+    // Force immediate remote refresh (Enter / 搜 button)
+    searchSeq += 1;
+    if (searchTimer) {
+      clearTimeout(searchTimer);
+      searchTimer = null;
+    }
+    const seq = ++searchSeq;
     set({ searching: true, error: "" });
     try {
-      const searchResults = await searchStocks(q, 12);
-      set({ searchResults, searching: false });
+      const remote = await searchStocks(q, 12);
+      if (seq !== searchSeq) return;
+      const local = get().stocks.filter((s) => {
+        const t = q.toLowerCase();
+        return (
+          s.code.toLowerCase().includes(t) ||
+          s.name.toLowerCase().includes(t) ||
+          s.sector.toLowerCase().includes(t)
+        );
+      });
+      const seen = new Set(remote.map((s) => s.code));
+      const merged = [...remote, ...local.filter((s) => !seen.has(s.code))].slice(0, 24);
+      set({ searchResults: merged, searching: false });
     } catch (err) {
+      if (seq !== searchSeq) return;
       set({ error: String(err), searching: false });
     }
   },
 
-  clearSearch: () => set({ searchQuery: "", searchResults: [] }),
+  clearSearch: () => {
+    searchSeq += 1;
+    if (searchTimer) {
+      clearTimeout(searchTimer);
+      searchTimer = null;
+    }
+    set({ searchQuery: "", searchResults: [], searching: false });
+  },
 }));
-
-function loadStrategyMap(): Record<string, StrategyCompose> {
-  try {
-    const raw = localStorage.getItem(STRATEGY_MAP_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw) as Record<string, StrategyCompose>;
-  } catch {
-    return {};
-  }
-}
-
-function saveStrategyMap(map: Record<string, StrategyCompose>) {
-  localStorage.setItem(STRATEGY_MAP_KEY, JSON.stringify(map));
-}
 
 const WATCHLIST_KEY = "watchlist_v2";
 const WATCHLIST_LEGACY_KEY = "watchlist";

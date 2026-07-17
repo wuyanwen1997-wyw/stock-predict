@@ -50,6 +50,9 @@ export interface BacktestResult {
   total_samples: number;
   direction_accuracy: number;
   actionable_accuracy: number;
+  all_day_accuracy?: number;
+  actionable_samples?: number;
+  selective_mode?: boolean;
   up_hit_rate: number;
   down_hit_rate: number;
   high_confidence_samples: number;

@@ -119,6 +119,15 @@ pub struct BacktestResult {
     pub total_samples: u32,
     pub direction_accuracy: f64,
     pub actionable_accuracy: f64,
+    /// 全交易日强制预测准确率（含信号不足日）；消息面主策略时与 direction_accuracy 可能不同
+    #[serde(default)]
+    pub all_day_accuracy: f64,
+    /// 有效信号样本数（领先概率达到出手线）
+    #[serde(default)]
+    pub actionable_samples: u32,
+    /// 是否按「有效信号」口径统计整体准确率
+    #[serde(default)]
+    pub selective_mode: bool,
     pub up_hit_rate: f64,
     pub down_hit_rate: f64,
     pub high_confidence_samples: u32,

@@ -10,12 +10,7 @@ use tauri::Manager;
 
 #[tauri::command]
 pub async fn load_stocks(app: AppHandle) -> Result<StocksPayload, String> {
-    let path = app
-        .path()
-        .resolve("resources/stocks.json", tauri::path::BaseDirectory::Resource)
-        .map_err(|e| e.to_string())?;
-
-    let text = fs::read_to_string(path).map_err(|e| format!("读取股票列表失败: {e}"))?;
+    let text = read_stocks_json(&app)?;
     let mut stocks: Vec<Stock> =
         serde_json::from_str(&text).map_err(|e| format!("解析股票列表失败: {e}"))?;
 
@@ -37,6 +32,20 @@ pub async fn load_stocks(app: AppHandle) -> Result<StocksPayload, String> {
     });
 
     Ok(StocksPayload { stocks, hot_stocks })
+}
+
+fn read_stocks_json(app: &AppHandle) -> Result<String, String> {
+    if let Ok(path) = app
+        .path()
+        .resolve("resources/stocks.json", tauri::path::BaseDirectory::Resource)
+    {
+        if let Ok(text) = fs::read_to_string(&path) {
+            return Ok(text);
+        }
+    }
+
+    // Android/iOS: resource files are APK/IPA assets; plain fs paths often fail.
+    Ok(include_str!("../resources/stocks.json").to_string())
 }
 
 #[tauri::command]
@@ -91,7 +100,7 @@ pub async fn analyze_stock(
         predictor::predict_compose(&stock, &klines, current_price, &compose).await
     };
 
-    let backtest_result = backtest::run_compose(&stock, &klines, &compose);
+    let backtest_result = backtest::run_compose(&stock, &klines, &compose).await;
 
     let chart_len = 90u32.max(lookback);
     let chart_klines = if klines.len() > chart_len as usize {
@@ -137,7 +146,7 @@ pub async fn backtest_stock(
     let _ = algorithm;
     let fetch_limit = (compose.lookback_days + 80).max(120);
     let bars = market::fetch_daily_klines(&stock, fetch_limit).await?;
-    Ok(backtest::run_compose(&stock, &bars, &compose))
+    Ok(backtest::run_compose(&stock, &bars, &compose).await)
 }
 
 #[tauri::command]

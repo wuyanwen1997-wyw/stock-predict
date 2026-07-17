@@ -106,7 +106,11 @@ function StockRow({
   );
 }
 
-export function StockSelector() {
+export function StockSelector({
+  onSelectStock,
+}: {
+  onSelectStock?: (stock: Stock) => void;
+} = {}) {
   const stocks = useStockStore((s) => s.stocks);
   const hotStocks = useStockStore((s) => s.hotStocks);
   const searchResults = useStockStore((s) => s.searchResults);
@@ -126,7 +130,7 @@ export function StockSelector() {
     if (searchQuery.trim()) return searchResults;
     if (showAll) return stocks;
     if (hotStocks.length > 0) return hotStocks;
-    return stocks.slice(0, 8);
+    return stocks.slice(0, 12);
   }, [searchQuery, searchResults, showAll, stocks, hotStocks]);
 
   const sectionTitle = searchQuery.trim()
@@ -136,6 +140,11 @@ export function StockSelector() {
       : hotStocks.length > 0
         ? "热门股票"
         : "推荐股票";
+
+  const handleSelect = (stock: Stock) => {
+    if (onSelectStock) onSelectStock(stock);
+    else selectStock(stock);
+  };
 
   return (
     <div className="space-y-4">
@@ -211,7 +220,7 @@ export function StockSelector() {
                 active={selectedStock?.code === stock.code}
                 starred={watchlist.some((s) => s.code === stock.code)}
                 index={i}
-                onSelect={() => selectStock(stock)}
+                onSelect={() => handleSelect(stock)}
                 onToggleWatchlist={() => toggleWatchlist(stock)}
               />
             ))

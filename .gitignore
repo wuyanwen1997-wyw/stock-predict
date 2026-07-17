@@ -14,3 +14,8 @@ src-tauri/gen/
 
 __pycache__/
 *.pyc
+
+# local training / probe artifacts
+tmp_*.txt
+tmp_*.json
+

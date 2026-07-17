@@ -9,8 +9,13 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "android:init": "tauri android init",
+    "android:dev": "powershell -ExecutionPolicy Bypass -File scripts/android-dev.ps1",
+    "android:build": "tauri android build",
+    "android:setup": "powershell -ExecutionPolicy Bypass -File scripts/setup-android.ps1"
   },
+
   "dependencies": {
     "@tauri-apps/api": "^2.4.0",
     "clsx": "^2.1.1",

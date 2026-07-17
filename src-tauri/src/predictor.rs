@@ -1,7 +1,8 @@
+use crate::cninfo::MessageArchive;
 use crate::factor_model;
 use crate::models::{DailyBar, PricePoint, PredictionResult, ScenarioForecast, Stock};
 use crate::strategy::{self, EnsembleSignal, StrategyCompose};
-use chrono::{Duration, Local, NaiveDate};
+use chrono::{Datelike, Duration, Local, NaiveDate, Weekday};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -21,6 +22,49 @@ pub fn is_high_confidence(up: f64, down: f64) -> bool {
     up.max(down) >= HIGH_CONF_THRESHOLD
 }
 
+/// 粗略 A 股休市日（周末 + 近年常见假期；未覆盖临时调休）
+fn is_ashare_closed(date: NaiveDate) -> bool {
+    matches!(date.weekday(), Weekday::Sat | Weekday::Sun) || is_ashare_holiday(date)
+}
+
+fn is_ashare_holiday(date: NaiveDate) -> bool {
+    // YYYYMMDD，覆盖 2025–2026 主要休市日（含常见调休；临时安排可能有偏差）
+    const HOLIDAYS: &[&str] = &[
+        // 2025
+        "20250101",
+        "20250128", "20250129", "20250130", "20250131", "20250201", "20250202", "20250203", "20250204",
+        "20250404", "20250405", "20250406",
+        "20250501", "20250502", "20250505",
+        "20250531", "20250601", "20250602",
+        "20251001", "20251002", "20251003", "20251006", "20251007", "20251008",
+        // 2026
+        "20260101", "20260102",
+        "20260216", "20260217", "20260218", "20260219", "20260220", "20260221", "20260222", "20260223",
+        "20260405", "20260406",
+        "20260501", "20260502", "20260503", "20260504",
+        "20260619", "20260620", "20260621",
+        "20261001", "20261002", "20261005", "20261006", "20261007",
+    ];
+    let key = date.format("%Y%m%d").to_string();
+    HOLIDAYS.contains(&key.as_str())
+}
+
+/// 下一 A 股交易日：从「今天之后」起跳过周末与假期（周五/周末 → 下周一）
+pub fn next_trading_day(from: NaiveDate) -> NaiveDate {
+    let mut d = from + Duration::days(1);
+    for _ in 0..20 {
+        if !is_ashare_closed(d) {
+            return d;
+        }
+        d += Duration::days(1);
+    }
+    d
+}
+
+pub fn next_trading_day_from_today() -> NaiveDate {
+    next_trading_day(Local::now().date_naive())
+}
+
 /// 直播预测：组合策略（含消息/政策/美股等非回测源）
 pub async fn predict_compose(
     stock: &Stock,
@@ -31,7 +75,7 @@ pub async fn predict_compose(
     let compose = strategy::normalize_compose(compose);
     let lookback = compose.lookback_days;
     let ensemble = strategy::evaluate_live(stock, bars, &compose).await;
-    build_result(stock, bars, current_price, lookback, "compose", Local::now().date_naive() + Duration::days(1), ensemble)
+    build_result(stock, bars, current_price, lookback, "compose", next_trading_day_from_today(), ensemble)
 }
 
 /// 历史单点预测（仅可回测信号源）
@@ -41,18 +85,25 @@ pub fn predict_compose_historical(
     current_price: f64,
     predict_date: NaiveDate,
     compose: &StrategyCompose,
+    message: Option<&MessageArchive>,
 ) -> PredictionResult {
     let compose = strategy::normalize_compose(compose);
     let lookback = compose.lookback_days;
-    let ensemble = strategy::evaluate_historical(bars, &compose);
+    let as_of = bars
+        .last()
+        .and_then(|b| crate::cninfo::parse_flexible_date(&b.date));
+    let ensemble = strategy::evaluate_historical(stock, bars, &compose, message, as_of);
     build_result(stock, bars, current_price, lookback, "compose", predict_date, ensemble)
 }
 
 pub fn predict_direction_compose(
+    stock: &Stock,
     bars: &[DailyBar],
     compose: &StrategyCompose,
+    message: Option<&MessageArchive>,
+    as_of: Option<NaiveDate>,
 ) -> DirectionSignal {
-    let ensemble = strategy::evaluate_historical(bars, compose);
+    let ensemble = strategy::evaluate_historical(stock, bars, compose, message, as_of);
     DirectionSignal {
         up_probability: ensemble.up_probability,
         down_probability: ensemble.down_probability,
@@ -83,21 +134,21 @@ pub fn predict(
     }
     if algorithm == "placeholder_v1" {
         // 简化：占位仍走随机
-        let predict_date = Local::now().date_naive() + Duration::days(1);
+        let predict_date = next_trading_day_from_today();
         let lookback = factor_model::clamp_lookback(lookback_days);
         let window = factor_model::take_lookback(bars, lookback);
         let signal = placeholder_signal(stock, algorithm, current_price, predict_date);
         return build_from_internal(stock, algorithm, current_price, lookback as u32, predict_date, signal, window);
     }
 
-    let ensemble = strategy::evaluate_historical(bars, &compose);
+    let ensemble = strategy::evaluate_historical(stock, bars, &compose, None, None);
     build_result(
         stock,
         bars,
         current_price,
         lookback_days,
         algorithm,
-        Local::now().date_naive() + Duration::days(1),
+        next_trading_day_from_today(),
         ensemble,
     )
 }
@@ -129,7 +180,7 @@ pub fn predict_direction(
             high_confidence: is_high_confidence(signal.up_probability, signal.down_probability),
         };
     }
-    predict_direction_compose(bars, &compose)
+    predict_direction_compose(stock, bars, &compose, None, None)
 }
 
 fn build_result(
@@ -381,6 +432,34 @@ mod tests {
     use super::*;
     use crate::strategy::StrategyCompose;
 
+    #[test]
+    fn weekend_predicts_monday() {
+        // 2026-07-17 Friday → Monday 2026-07-20
+        let fri = NaiveDate::from_ymd_opt(2026, 7, 17).unwrap();
+        assert_eq!(
+            next_trading_day(fri),
+            NaiveDate::from_ymd_opt(2026, 7, 20).unwrap()
+        );
+        // Saturday → Monday
+        let sat = NaiveDate::from_ymd_opt(2026, 7, 18).unwrap();
+        assert_eq!(
+            next_trading_day(sat),
+            NaiveDate::from_ymd_opt(2026, 7, 20).unwrap()
+        );
+        // Sunday → Monday
+        let sun = NaiveDate::from_ymd_opt(2026, 7, 19).unwrap();
+        assert_eq!(
+            next_trading_day(sun),
+            NaiveDate::from_ymd_opt(2026, 7, 20).unwrap()
+        );
+        // Thursday → Friday
+        let thu = NaiveDate::from_ymd_opt(2026, 7, 16).unwrap();
+        assert_eq!(
+            next_trading_day(thu),
+            NaiveDate::from_ymd_opt(2026, 7, 17).unwrap()
+        );
+    }
+
     fn bars_uptrend(n: usize) -> Vec<DailyBar> {
         (0..n)
             .map(|i| DailyBar {
@@ -417,6 +496,7 @@ mod tests {
             139.0,
             NaiveDate::from_ymd_opt(2024, 6, 1).unwrap(),
             &compose,
+            None,
         );
         assert!(!result.signals.is_empty());
     }

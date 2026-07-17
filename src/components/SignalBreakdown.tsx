@@ -18,7 +18,7 @@ export function SignalBreakdown({ signals }: Props) {
       <div className="mb-4">
         <h3 className="text-base font-semibold text-slate-100">信号明细</h3>
         <p className="mt-1 text-xs text-slate-500">
-          各信号源独立打分后按权重融合；「仅实时」源不参与历史回测
+          各信号源独立打分后按权重融合；消息面可按公告日期参与回测，资讯/政策/美股仍仅实时
         </p>
       </div>
 

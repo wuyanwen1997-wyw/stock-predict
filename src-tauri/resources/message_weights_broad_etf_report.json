@@ -1,0 +1,29 @@
+{
+  "sample": {
+    "klines": 220,
+    "labels": 219,
+    "baseline_up": 0.5068,
+    "unique_news": 1138
+  },
+  "bull": [
+    { "kw": "反弹", "n": 11, "acc": 0.273, "edge": -0.234 },
+    { "kw": "放量", "n": 11, "acc": 0.364, "edge": -0.143 },
+    { "kw": "稳增长", "n": 23, "acc": 0.478, "edge": -0.029 },
+    { "kw": "增量资金", "n": 19, "acc": 0.421, "edge": -0.086 },
+    { "kw": "收涨", "n": 6, "acc": 0.333, "edge": -0.174 },
+    { "kw": "突破", "n": 10, "acc": 0.5, "edge": -0.007 },
+    { "kw": "新高", "n": 6, "acc": 0.333, "edge": -0.174 },
+    { "kw": "活跃", "n": 9, "acc": 0.333, "edge": -0.174 },
+    { "kw": "风险偏好", "n": 11, "acc": 0.545, "edge": 0.039 }
+  ],
+  "bear": [
+    { "kw": "调整", "n": 8, "acc": 0.5, "edge": 0.007 },
+    { "kw": "下跌", "n": 11, "acc": 0.636, "edge": 0.143 },
+    { "kw": "承压", "n": 6, "acc": 0.667, "edge": 0.174 },
+    { "kw": "跌破", "n": 9, "acc": 0.556, "edge": 0.062 },
+    { "kw": "缩量", "n": 6, "acc": 0.667, "edge": 0.174 },
+    { "kw": "走弱", "n": 6, "acc": 0.667, "edge": 0.174 },
+    { "kw": "回落", "n": 6, "acc": 0.833, "edge": 0.34 }
+  ],
+  "takeaway": "Headline cheer words (反弹/放量/收涨/新高) anti-correlate with next-day up on 510980 in this sparse sample; bearish tone words have clearer edge. Policy/flow priors kept for sparse hits."
+}

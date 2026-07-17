@@ -1,7 +1,9 @@
 pub mod backtest;
+pub mod cninfo;
 pub mod commands;
 pub mod factor_model;
 pub mod market;
+pub mod message_sentiment;
 pub mod models;
 pub mod predictor;
 pub mod strategy;

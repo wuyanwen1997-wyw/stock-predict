@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "android-capability",
+  "description": "Android capabilities for StockPredict",
+  "platforms": ["android"],
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

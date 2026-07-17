@@ -137,9 +137,10 @@ export function ProbabilityPanel({ prediction, backtest }: Props) {
       <div className="rounded-2xl border border-white/5 bg-slate-900/50 p-6 backdrop-blur-sm">
         <div className="mb-6 flex items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold text-slate-100">明日涨跌概率</h2>
+            <h2 className="text-lg font-semibold text-slate-100">下一交易日涨跌概率</h2>
             <p className="mt-1 text-sm text-slate-500">
               预测日期 {prediction.predict_date} · 二分类（涨 / 跌）
+              <span className="text-slate-600"> · 周末/节假日自动顺延</span>
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">

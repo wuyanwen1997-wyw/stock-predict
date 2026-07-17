@@ -12,7 +12,7 @@ export function SettingsPage() {
   const lookbackOptions = [25, 50, 60, 90, 120];
 
   return (
-    <div className="p-6 lg:p-8">
+    <div className="h-full min-h-0 overflow-y-auto p-6 lg:p-8">
       <motion.header
         initial={{ opacity: 0, y: -12 }}
         animate={{ opacity: 1, y: 0 }}

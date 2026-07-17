@@ -75,9 +75,13 @@ export function BacktestPanel({ result, loading }: Props) {
         <>
           <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <MetricCard
-              label="整体准确率"
+              label={result.selective_mode ? "有效信号准确率" : "整体准确率"}
               value={`${result.direction_accuracy.toFixed(1)}%`}
-              hint={`${result.total_samples} 次样本`}
+              hint={
+                result.selective_mode
+                  ? `${result.total_samples} 次有效 · 全样本 ${(result.all_day_accuracy ?? 0).toFixed(1)}%`
+                  : `${result.total_samples} 次样本`
+              }
               accent="emerald"
             />
             <MetricCard

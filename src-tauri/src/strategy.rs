@@ -1,5 +1,7 @@
-use crate::models::{DailyBar, SignalContribution, Stock};
+use crate::cninfo::MessageArchive;
 use crate::factor_model;
+use crate::models::{DailyBar, SignalContribution, Stock};
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 /// 信号源目录条目
@@ -84,8 +86,9 @@ pub fn catalog() -> Vec<StrategySourceInfo> {
             id: "message".into(),
             name: "消息面".into(),
             category: "舆情".into(),
-            description: "个股公告/快讯关键词情绪（能取到数据时生效）。".into(),
-            backtestable: false,
+            description: "按股票类型选用关键词与打分（黄金看美联储/地缘，金融看降准息差，科技看制裁替代等）。"
+                .into(),
+            backtestable: true,
             available: true,
         },
         StrategySourceInfo {
@@ -201,15 +204,23 @@ pub async fn evaluate_live(
     fuse(raw)
 }
 
-/// 历史回测用：仅可回测信号源
+/// 历史回测用：仅可回测信号源（消息面需传入公告归档）
 pub fn evaluate_historical(
+    stock: &Stock,
     bars: &[DailyBar],
     compose: &StrategyCompose,
+    message: Option<&MessageArchive>,
+    as_of: Option<NaiveDate>,
 ) -> EnsembleSignal {
     let compose = normalize_compose(compose);
     let lookback = factor_model::clamp_lookback(compose.lookback_days);
     let window = factor_model::take_lookback(bars, lookback);
     let catalog = catalog();
+    let as_of_date = as_of.or_else(|| {
+        window
+            .last()
+            .and_then(|b| crate::cninfo::parse_flexible_date(&b.date))
+    });
 
     let mut raw = Vec::new();
     for cfg in compose.sources.iter().filter(|s| s.enabled && s.weight > 0.0) {
@@ -222,6 +233,22 @@ pub fn evaluate_historical(
             "momentum" => eval_momentum(window),
             "mean_reversion" => eval_mean_reversion(window),
             "volume" => eval_volume(window),
+            "message" => {
+                let Some(day) = as_of_date else {
+                    continue;
+                };
+                match message {
+                    Some(archive) => eval_message_from_archive(stock, archive, day),
+                    None => contrib(
+                        "message",
+                        "消息面",
+                        "舆情",
+                        0.0,
+                        "公告归档拉取失败，按中性计入".into(),
+                        "degraded",
+                    ),
+                }
+            }
             _ => continue,
         };
         raw.push((cfg.weight, contrib));
@@ -232,6 +259,34 @@ pub fn evaluate_historical(
     }
 
     fuse(raw)
+}
+
+pub fn compose_needs_message(compose: &StrategyCompose) -> bool {
+    let compose = normalize_compose(compose);
+    compose
+        .sources
+        .iter()
+        .any(|s| s.id == "message" && s.enabled && s.weight > 0.0)
+}
+
+/// 是否几乎只开了消息面（宽基指数适合「有效信号」口径回测）
+pub fn compose_is_message_primary(compose: &StrategyCompose) -> bool {
+    let compose = normalize_compose(compose);
+    let active: Vec<_> = compose
+        .sources
+        .iter()
+        .filter(|s| s.enabled && s.weight > 0.0)
+        .collect();
+    if active.is_empty() {
+        return false;
+    }
+    let msg_w: f64 = active
+        .iter()
+        .filter(|s| s.id == "message")
+        .map(|s| s.weight)
+        .sum();
+    let all_w: f64 = active.iter().map(|s| s.weight).sum();
+    msg_w / all_w.max(1e-9) >= 0.85
 }
 
 fn fuse(raw: Vec<(f64, SignalContribution)>) -> EnsembleSignal {
@@ -281,6 +336,22 @@ fn probs_from_score(score: f64) -> (f64, f64, f64) {
     (up, 100.0 - up, confidence)
 }
 
+/// 宽基消息面：|score|<0.15 → 中性(不计入有效样本)；0.35→约60%高置信
+fn probs_from_score_soft(score: f64) -> (f64, f64, f64) {
+    let a = score.abs();
+    if a < 0.15 {
+        return (50.0, 50.0, 42.0);
+    }
+    // 0.15→55%，0.35→60%，更强→最高 66%
+    let lead = if a < 0.35 {
+        55.0 + (a - 0.15) / 0.20 * 5.0
+    } else {
+        60.0 + ((a - 0.35) / 1.2).clamp(0.0, 1.0) * 6.0
+    };
+    let up = if score > 0.0 { lead } else { 100.0 - lead };
+    (up, 100.0 - up, lead)
+}
+
 fn contrib(
     id: &str,
     name: &str,
@@ -290,6 +361,29 @@ fn contrib(
     status: &str,
 ) -> SignalContribution {
     let (up, down, confidence) = probs_from_score(score);
+    SignalContribution {
+        id: id.into(),
+        name: name.into(),
+        category: category.into(),
+        up_probability: (up * 10.0).round() / 10.0,
+        down_probability: (down * 10.0).round() / 10.0,
+        confidence: (confidence * 10.0).round() / 10.0,
+        weight: 0.0,
+        weight_normalized: 0.0,
+        note,
+        status: status.into(),
+    }
+}
+
+fn contrib_soft(
+    id: &str,
+    name: &str,
+    category: &str,
+    score: f64,
+    note: String,
+    status: &str,
+) -> SignalContribution {
+    let (up, down, confidence) = probs_from_score_soft(score);
     SignalContribution {
         id: id.into(),
         name: name.into(),
@@ -422,18 +516,25 @@ fn sentiment_from_titles(titles: &[String], bullish: &[&str], bearish: &[&str]) 
     let mut hits = 0;
     for t in titles {
         let lower = t.to_lowercase();
+        let mut bull = 0i32;
+        let mut bear = 0i32;
         for w in bullish {
             if t.contains(w) || lower.contains(&w.to_lowercase()) {
-                score += 0.35;
-                hits += 1;
+                bull += 1;
             }
         }
         for w in bearish {
             if t.contains(w) || lower.contains(&w.to_lowercase()) {
-                score -= 0.35;
-                hits += 1;
+                bear += 1;
             }
         }
+        if bull == 0 && bear == 0 {
+            continue;
+        }
+        // 单条标题：按命中差计分，并封顶，避免关键词扩容后重复累加过猛
+        let net = (bull - bear).clamp(-3, 3) as f64;
+        score += net * 0.4;
+        hits += (bull + bear) as usize;
     }
     let note = if hits == 0 {
         format!("扫描 {} 条，中性", titles.len())
@@ -504,23 +605,65 @@ async fn fetch_eastmoney_news_titles(query: &str, limit: usize) -> Result<Vec<St
     Ok(titles)
 }
 
+/// 公告情绪回看自然日（不含未来）；宽基指数新闻衰减快，用更短窗口
+pub const MESSAGE_LOOKBACK_DAYS: i64 = 7;
+
+fn message_lookback_for(stock: &Stock) -> i64 {
+    match crate::message_sentiment::classify(stock) {
+        crate::message_sentiment::MessageKind::BroadEtf => 2,
+        crate::message_sentiment::MessageKind::Gold | crate::message_sentiment::MessageKind::OverseasEtf => {
+            5
+        }
+        _ => MESSAGE_LOOKBACK_DAYS,
+    }
+}
+
+fn eval_message_from_archive(
+    stock: &Stock,
+    archive: &MessageArchive,
+    as_of: NaiveDate,
+) -> SignalContribution {
+    let profile = crate::message_sentiment::profile_for(stock);
+    let lookback = message_lookback_for(stock);
+    let dated = archive.items_as_of(as_of, lookback);
+    if dated.is_empty() {
+        return contrib(
+            "message",
+            "消息面",
+            "舆情",
+            0.0,
+            format!("{} · 近 {lookback} 日无相关消息", profile.label),
+            "ok",
+        );
+    }
+    let (score, note) = crate::message_sentiment::score_titles_dated(&profile, as_of, &dated);
+    // 宽基：软化概率，避免弱命中就标成「高置信」（此前高置信准确率反低于整体）
+    if profile.kind == crate::message_sentiment::MessageKind::BroadEtf {
+        contrib_soft("message", "消息面", "舆情", score, note, "ok")
+    } else {
+        contrib("message", "消息面", "舆情", score, note, "ok")
+    }
+}
+
 async fn eval_message(stock: &Stock) -> SignalContribution {
-    let q = format!("{} {}", stock.name, stock.code);
-    match fetch_eastmoney_news_titles(&q, 12).await {
-        Ok(titles) => {
-            let (score, note) = sentiment_from_titles(
-                &titles,
-                &["增长", "回购", "中标", "利好", "上涨", "突破", "签约", "盈利"],
-                &["下调", "减持", "亏损", "处罚", "立案", "跌停", "风险", "爆雷"],
-            );
-            contrib("message", "消息面", "舆情", score, note, "ok")
+    let lookback = message_lookback_for(stock);
+    match crate::cninfo::fetch_recent(stock, lookback + 3).await {
+        Ok(archive) => {
+            let as_of = chrono::Local::now().date_naive();
+            let mut c = eval_message_from_archive(stock, &archive, as_of);
+            if archive.is_empty() {
+                let profile = crate::message_sentiment::profile_for(stock);
+                c.note = format!("{} · 近 {} 日未拉到消息", profile.label, lookback + 3);
+                c.status = "degraded".into();
+            }
+            c
         }
         Err(e) => contrib(
             "message",
             "消息面",
             "舆情",
             0.0,
-            format!("暂不可用: {e}"),
+            format!("消息暂不可用: {e}"),
             "degraded",
         ),
     }
