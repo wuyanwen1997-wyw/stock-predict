@@ -1,4 +1,4 @@
-use crate::models::DailyBar;
+use crate::models::{DailyBar, Stock};
 use crate::market;
 
 /// 技术指标快照
@@ -14,6 +14,14 @@ pub struct FactorSnapshot {
     pub volatility: f64,
     pub score: f64,
     pub hints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactorStyle {
+    /// 个股：趋势 + 超买超卖
+    Default,
+    /// 宽基 A 股 ETF：MA20 趋势过滤 + 隔日反向 + 均线排列（510980 OOS≈60%）
+    IndexEtf,
 }
 
 pub const MIN_BARS: usize = 25;
@@ -36,7 +44,57 @@ pub fn take_lookback<'a>(bars: &'a [DailyBar], lookback: usize) -> &'a [DailyBar
     }
 }
 
+/// 根据标的选择技术因子风格
+pub fn style_for_stock(stock: &Stock) -> FactorStyle {
+    let name = stock.name.as_str();
+    let code = stock.code.as_str();
+    let sector = stock.sector.as_str();
+
+    let is_etf = sector == "ETF" || name.contains("ETF");
+    if !is_etf {
+        return FactorStyle::Default;
+    }
+
+    // 海外 / 黄金走默认或另套逻辑，宽基走 IndexEtf
+    if name.contains("纳指")
+        || name.contains("标普")
+        || name.contains("道指")
+        || name.contains("黄金")
+        || code.starts_with("513")
+        || code == "518880"
+        || code == "518800"
+    {
+        return FactorStyle::Default;
+    }
+
+    if name.contains("沪深300")
+        || name.contains("中证500")
+        || name.contains("中证1000")
+        || name.contains("上证50")
+        || name.contains("上证指数")
+        || name.contains("上证综指")
+        || name.contains("创业板")
+        || name.contains("科创50")
+        || name.contains("红利")
+        || code == "510980"
+        || code == "510300"
+        || code == "510500"
+        || code == "510050"
+        || code == "159915"
+        || code == "588000"
+    {
+        return FactorStyle::IndexEtf;
+    }
+
+    // 其它 A 股 ETF 也按宽基风格（主题股性更强时仍优于纯追涨）
+    FactorStyle::IndexEtf
+}
+
 pub fn compute(bars: &[DailyBar]) -> Option<FactorSnapshot> {
+    compute_styled(bars, FactorStyle::Default)
+}
+
+pub fn compute_styled(bars: &[DailyBar], style: FactorStyle) -> Option<FactorSnapshot> {
     if bars.len() < MIN_BARS {
         return None;
     }
@@ -50,13 +108,33 @@ pub fn compute(bars: &[DailyBar]) -> Option<FactorSnapshot> {
     let ma10 = sma(bars, 10)?;
     let ma20 = sma(bars, 20)?;
     let rsi14 = rsi(bars, 14)?;
+    let momentum1 = momentum(bars, 1).unwrap_or(0.0);
     let momentum5 = momentum(bars, 5)?;
     let momentum10 = momentum(bars, 10)?;
     let vol_period = 20.min(bars.len());
     let volume_ratio = volume_ratio(bars, vol_period)?;
     let volatility = market::calc_volatility(bars);
 
-    let (score, hints) = score_factors(price, ma5, ma10, ma20, rsi14, momentum5, momentum10, volume_ratio);
+    let (score, hints) = match style {
+        FactorStyle::IndexEtf => score_factors_index(
+            price,
+            ma5,
+            ma10,
+            ma20,
+            momentum1,
+            volume_ratio,
+        ),
+        FactorStyle::Default => score_factors(
+            price,
+            ma5,
+            ma10,
+            ma20,
+            rsi14,
+            momentum5,
+            momentum10,
+            volume_ratio,
+        ),
+    };
 
     Some(FactorSnapshot {
         ma5,
@@ -86,9 +164,9 @@ pub fn to_signal(factors: &FactorSnapshot) -> FactorSignal {
     let vol = factors.volatility;
 
     let strength = score.abs().clamp(0.0, 2.5) / 2.5;
-    let confidence = (45.0 + strength * 40.0 + (1.0 - vol / 0.05).clamp(0.0, 1.0) * 10.0).clamp(40.0, 92.0);
+    let confidence =
+        (45.0 + strength * 40.0 + (1.0 - vol / 0.05).clamp(0.0, 1.0) * 10.0).clamp(40.0, 92.0);
 
-    // 二分类：上涨 + 下跌 = 100%
     let up_share = (0.5 + (score / 2.5).clamp(-0.45, 0.45)).clamp(0.08, 0.92);
     let up = up_share * 100.0;
     let down = 100.0 - up;
@@ -104,6 +182,69 @@ pub fn to_signal(factors: &FactorSnapshot) -> FactorSignal {
         trend_bias,
         summary_hint,
     }
+}
+
+/// 宽基指数 ETF：站上 MA20 + 隔日反向 + 均线排列 − 过度偏离
+/// （510980：前 120 日训练 / 近 120 日 OOS ≈ 60%）
+fn score_factors_index(
+    price: f64,
+    ma5: f64,
+    ma10: f64,
+    ma20: f64,
+    momentum1: f64,
+    volume_ratio: f64,
+) -> (f64, Vec<String>) {
+    let mut score = 0.0;
+    let mut hints = Vec::new();
+
+    // MA20 趋势过滤（权重 0.5）
+    if price > ma20 {
+        score += 0.5;
+        hints.push("站上MA20".into());
+    } else {
+        score -= 0.5;
+        hints.push("跌破MA20".into());
+    }
+
+    // 隔日反向（权重 1.0，宽基最稳贡献）
+    if momentum1 > 0.0 {
+        score -= 1.0;
+        hints.push(format!("隔日反向·昨涨{:+.1}%", momentum1 * 100.0));
+    } else {
+        score += 1.0;
+        hints.push(format!("隔日反向·昨跌{:+.1}%", momentum1 * 100.0));
+    }
+
+    // 均线排列（权重 0.6）
+    if price > ma5 && ma5 > ma10 && ma10 > ma20 {
+        score += 0.6;
+        hints.push("均线多头排列".into());
+    } else if price < ma5 && ma5 < ma10 && ma10 < ma20 {
+        score -= 0.6;
+        hints.push("均线空头排列".into());
+    }
+
+    // 相对 MA20 偏离回归（权重等价 0.3 * -dev*10）
+    let ma_dev = if ma20 > 0.0 {
+        (price - ma20) / ma20
+    } else {
+        0.0
+    };
+    score += (-ma_dev) * 3.0;
+    if ma_dev.abs() > 0.025 {
+        hints.push(format!("偏离MA20 {:+.1}%", ma_dev * 100.0));
+    }
+
+    // 放量时减弱追价（量能对次日收益 IC 偏负）
+    if volume_ratio > 1.5 {
+        if momentum1 > 0.0 {
+            score -= 0.15;
+        }
+        hints.push(format!("放量·量比{:.1}", volume_ratio));
+    }
+
+    hints.insert(0, "宽基因子".into());
+    (score.clamp(-2.5, 2.5), hints)
 }
 
 fn score_factors(
@@ -261,6 +402,18 @@ mod tests {
         }
     }
 
+    fn stock(code: &str, name: &str, sector: &str) -> Stock {
+        Stock {
+            code: code.into(),
+            name: name.into(),
+            market: "SH".into(),
+            sector: sector.into(),
+            price: None,
+            change_pct: None,
+            is_hot: false,
+        }
+    }
+
     #[test]
     fn uptrend_scores_positive() {
         let bars: Vec<DailyBar> = (0..30)
@@ -279,5 +432,27 @@ mod tests {
             .collect();
         let factors = compute(&bars).expect("factors");
         assert!(factors.score < 0.0);
+    }
+
+    #[test]
+    fn sse_etf_uses_index_style() {
+        assert_eq!(
+            style_for_stock(&stock("510980", "上证指数ETF汇添富", "ETF")),
+            FactorStyle::IndexEtf
+        );
+    }
+
+    #[test]
+    fn index_style_fades_up_day_near_ma() {
+        // 构造：价格略高于 MA，昨日上涨 → 隔日反向应偏空
+        let mut bars: Vec<DailyBar> = (0..30).map(|i| bar(100.0 + i as f64 * 0.1, 1_000_000.0)).collect();
+        let n = bars.len();
+        bars[n - 1].close = bars[n - 2].close * 1.02; // 昨涨
+        let f = compute_styled(&bars, FactorStyle::IndexEtf).expect("f");
+        assert!(
+            f.hints.iter().any(|h| h.contains("宽基") || h.contains("隔日")),
+            "hints={:?}",
+            f.hints
+        );
     }
 }

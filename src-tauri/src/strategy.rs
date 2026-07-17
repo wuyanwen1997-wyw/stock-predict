@@ -54,7 +54,7 @@ pub fn catalog() -> Vec<StrategySourceInfo> {
             id: "factor".into(),
             name: "技术多因子".into(),
             category: "技术面".into(),
-            description: "MA 排列、RSI、动量、量能等多因子综合评分。".into(),
+            description: "MA/RSI/动量/量能；宽基ETF自动切换为MA20+隔日反向模型。".into(),
             backtestable: true,
             available: true,
         },
@@ -62,7 +62,7 @@ pub fn catalog() -> Vec<StrategySourceInfo> {
             id: "momentum".into(),
             name: "趋势动量".into(),
             category: "技术面".into(),
-            description: "强调短中期价格动量与均线斜率。".into(),
+            description: "短中期动量；宽基ETF偏隔日反向。".into(),
             backtestable: true,
             available: true,
         },
@@ -183,10 +183,10 @@ pub async fn evaluate_live(
     let mut raw = Vec::new();
     for cfg in compose.sources.iter().filter(|s| s.enabled && s.weight > 0.0) {
         let contrib = match cfg.id.as_str() {
-            "factor" => eval_factor(window),
-            "momentum" => eval_momentum(window),
+            "factor" => eval_factor(stock, window),
+            "momentum" => eval_momentum(stock, window),
             "mean_reversion" => eval_mean_reversion(window),
-            "volume" => eval_volume(window),
+            "volume" => eval_volume(stock, window),
             "message" => eval_message(stock).await,
             "news" => eval_news().await,
             "policy" => eval_policy().await,
@@ -198,7 +198,7 @@ pub async fn evaluate_live(
 
     if raw.is_empty() {
         // 兜底：至少跑技术多因子
-        raw.push((1.0, eval_factor(window)));
+        raw.push((1.0, eval_factor(stock, window)));
     }
 
     fuse(raw)
@@ -229,10 +229,10 @@ pub fn evaluate_historical(
             continue;
         }
         let contrib = match cfg.id.as_str() {
-            "factor" => eval_factor(window),
-            "momentum" => eval_momentum(window),
+            "factor" => eval_factor(stock, window),
+            "momentum" => eval_momentum(stock, window),
             "mean_reversion" => eval_mean_reversion(window),
-            "volume" => eval_volume(window),
+            "volume" => eval_volume(stock, window),
             "message" => {
                 let Some(day) = as_of_date else {
                     continue;
@@ -255,7 +255,7 @@ pub fn evaluate_historical(
     }
 
     if raw.is_empty() {
-        raw.push((1.0, eval_factor(window)));
+        raw.push((1.0, eval_factor(stock, window)));
     }
 
     fuse(raw)
@@ -413,8 +413,9 @@ fn neutral(id: &str, name: &str, note: &str) -> SignalContribution {
     }
 }
 
-fn eval_factor(bars: &[DailyBar]) -> SignalContribution {
-    match factor_model::compute(bars) {
+fn eval_factor(stock: &Stock, bars: &[DailyBar]) -> SignalContribution {
+    let style = factor_model::style_for_stock(stock);
+    match factor_model::compute_styled(bars, style) {
         Some(f) => {
             let note = if f.hints.is_empty() {
                 format!("综合得分 {:+.2}", f.score)
@@ -427,26 +428,40 @@ fn eval_factor(bars: &[DailyBar]) -> SignalContribution {
     }
 }
 
-fn eval_momentum(bars: &[DailyBar]) -> SignalContribution {
+fn eval_momentum(stock: &Stock, bars: &[DailyBar]) -> SignalContribution {
     if bars.len() < 15 {
         return neutral("momentum", "趋势动量", "K线不足");
     }
     let n = bars.len();
     let c0 = bars[n - 1].close;
+    let c1 = bars[n.saturating_sub(2)].close;
     let c5 = bars[n.saturating_sub(6)].close;
     let c10 = bars[n.saturating_sub(11)].close;
-    if c5 <= 0.0 || c10 <= 0.0 {
+    if c1 <= 0.0 || c5 <= 0.0 || c10 <= 0.0 {
         return neutral("momentum", "趋势动量", "价格异常");
     }
+    let m1 = (c0 - c1) / c1;
     let m5 = (c0 - c5) / c5;
     let m10 = (c0 - c10) / c10;
-    let score = (m5 * 12.0 + m10 * 6.0).clamp(-2.5, 2.5);
+
+    // 宽基：隔日反向为主，中期动量为辅；个股仍以趋势动量为主
+    let score = if factor_model::style_for_stock(stock) == factor_model::FactorStyle::IndexEtf {
+        let fade = if m1 > 0.0 { -1.0 } else { 1.0 };
+        (fade + m5 * 4.0 + m10 * 2.0).clamp(-2.5, 2.5)
+    } else {
+        (m5 * 12.0 + m10 * 6.0).clamp(-2.5, 2.5)
+    };
     contrib(
         "momentum",
         "趋势动量",
         "技术面",
         score,
-        format!("5日 {:+.1}% / 10日 {:+.1}%", m5 * 100.0, m10 * 100.0),
+        format!(
+            "1日 {:+.1}% / 5日 {:+.1}% / 10日 {:+.1}%",
+            m1 * 100.0,
+            m5 * 100.0,
+            m10 * 100.0
+        ),
         "ok",
     )
 }
@@ -482,7 +497,7 @@ fn eval_mean_reversion(bars: &[DailyBar]) -> SignalContribution {
     )
 }
 
-fn eval_volume(bars: &[DailyBar]) -> SignalContribution {
+fn eval_volume(stock: &Stock, bars: &[DailyBar]) -> SignalContribution {
     if bars.len() < 20 {
         return neutral("volume", "量价确认", "K线不足");
     }
@@ -490,13 +505,30 @@ fn eval_volume(bars: &[DailyBar]) -> SignalContribution {
     let today = &bars[n - 1];
     let prev = &bars[n - 2];
     let avg_vol: f64 = bars[n - 20..].iter().map(|b| b.volume).sum::<f64>() / 20.0;
-    let vr = if avg_vol > 0.0 { today.volume / avg_vol } else { 1.0 };
+    let vr = if avg_vol > 0.0 {
+        today.volume / avg_vol
+    } else {
+        1.0
+    };
     let chg = if prev.close > 0.0 {
         (today.close - prev.close) / prev.close
     } else {
         0.0
     };
-    let (score, note) = if vr > 1.4 && chg > 0.005 {
+
+    let index = factor_model::style_for_stock(stock) == factor_model::FactorStyle::IndexEtf;
+    let (score, note) = if index {
+        // 宽基：放量后更偏谨慎（量能与次日收益偏负相关）
+        if vr > 1.4 && chg > 0.005 {
+            (-0.6, format!("放量追涨慎用 · 量比 {:.1}", vr))
+        } else if vr > 1.4 && chg < -0.005 {
+            (0.5, format!("放量下跌或钝化 · 量比 {:.1}", vr))
+        } else if vr < 0.7 {
+            (0.15 * (-chg.signum()), format!("缩量 · 量比 {:.1}", vr))
+        } else {
+            (-chg * 5.0, format!("量能中性偏反向 · 量比 {:.1}", vr))
+        }
+    } else if vr > 1.4 && chg > 0.005 {
         (1.2, format!("放量上涨 · 量比 {:.1}", vr))
     } else if vr > 1.4 && chg < -0.005 {
         (-1.2, format!("放量下跌 · 量比 {:.1}", vr))
@@ -505,7 +537,14 @@ fn eval_volume(bars: &[DailyBar]) -> SignalContribution {
     } else {
         (chg * 8.0, format!("量能中性 · 量比 {:.1}", vr))
     };
-    contrib("volume", "量价确认", "技术面", score.clamp(-2.5, 2.5), note, "ok")
+    contrib(
+        "volume",
+        "量价确认",
+        "技术面",
+        score.clamp(-2.5, 2.5),
+        note,
+        "ok",
+    )
 }
 
 fn sentiment_from_titles(titles: &[String], bullish: &[&str], bearish: &[&str]) -> (f64, String) {
