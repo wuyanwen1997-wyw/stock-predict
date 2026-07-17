@@ -55,6 +55,12 @@ export interface BacktestResult {
   selective_mode?: boolean;
   up_hit_rate: number;
   down_hit_rate: number;
+  up_hit_rate_actionable?: number;
+  down_hit_rate_actionable?: number;
+  up_samples?: number;
+  down_samples?: number;
+  up_samples_actionable?: number;
+  down_samples_actionable?: number;
   high_confidence_samples: number;
   high_confidence_accuracy: number;
   high_confidence_threshold: number;

@@ -130,6 +130,20 @@ pub struct BacktestResult {
     pub selective_mode: bool,
     pub up_hit_rate: f64,
     pub down_hit_rate: f64,
+    /// 仅有效信号日的看涨命中率
+    #[serde(default)]
+    pub up_hit_rate_actionable: f64,
+    /// 仅有效信号日的看跌命中率
+    #[serde(default)]
+    pub down_hit_rate_actionable: f64,
+    #[serde(default)]
+    pub up_samples: u32,
+    #[serde(default)]
+    pub down_samples: u32,
+    #[serde(default)]
+    pub up_samples_actionable: u32,
+    #[serde(default)]
+    pub down_samples_actionable: u32,
     pub high_confidence_samples: u32,
     pub high_confidence_accuracy: f64,
     pub high_confidence_threshold: f64,

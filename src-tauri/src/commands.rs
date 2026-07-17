@@ -76,7 +76,10 @@ pub async fn analyze_stock(
         compose.lookback_days = lb;
     }
     let lookback = compose.lookback_days;
-    let fetch_limit = (lookback + 80).max(120);
+    // 回看窗口用于单日特征；另拉足够 K 线，使 walk-forward 至少约 BACKTEST_HORIZON 个预测日
+    // 样本数 ≈ fetch_limit - lookback - 1
+    const BACKTEST_HORIZON: u32 = 120;
+    let fetch_limit = (lookback + BACKTEST_HORIZON + 1).max(lookback + 80);
 
     let stock_list = [stock.clone()];
     let (quotes_result, klines_result) = tokio::join!(
@@ -144,7 +147,8 @@ pub async fn backtest_stock(
         compose.lookback_days = d;
     }
     let _ = algorithm;
-    let fetch_limit = (compose.lookback_days + 80).max(120);
+    const BACKTEST_HORIZON: u32 = 120;
+    let fetch_limit = (compose.lookback_days + BACKTEST_HORIZON + 1).max(compose.lookback_days + 80);
     let bars = market::fetch_daily_klines(&stock, fetch_limit).await?;
     Ok(backtest::run_compose(&stock, &bars, &compose).await)
 }

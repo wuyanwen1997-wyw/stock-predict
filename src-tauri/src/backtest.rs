@@ -41,6 +41,10 @@ pub async fn run_compose(
     let mut up_total = 0u32;
     let mut down_hits = 0u32;
     let mut down_total = 0u32;
+    let mut up_hits_act = 0u32;
+    let mut up_total_act = 0u32;
+    let mut down_hits_act = 0u32;
+    let mut down_total_act = 0u32;
     let mut hc_correct = 0u32;
     let mut hc_total = 0u32;
 
@@ -71,20 +75,32 @@ pub async fn run_compose(
             correct_all += 1;
         }
 
+        if signal.predicted == "up" {
+            up_total += 1;
+            if actual == "up" {
+                up_hits += 1;
+            }
+        } else {
+            down_total += 1;
+            if actual == "down" {
+                down_hits += 1;
+            }
+        }
+
         if actionable {
             total_act += 1;
             if is_correct {
                 correct_act += 1;
             }
             if signal.predicted == "up" {
-                up_total += 1;
+                up_total_act += 1;
                 if actual == "up" {
-                    up_hits += 1;
+                    up_hits_act += 1;
                 }
             } else {
-                down_total += 1;
+                down_total_act += 1;
                 if actual == "down" {
-                    down_hits += 1;
+                    down_hits_act += 1;
                 }
             }
         }
@@ -116,16 +132,14 @@ pub async fn run_compose(
     let actionable_accuracy = pct(correct_act, total_act);
     let high_confidence_accuracy = pct(hc_correct, hc_total);
     let threshold = predictor::HIGH_CONF_THRESHOLD;
-
-    // 消息面主策略：整体准确率 = 有效信号准确率（弱信号日不硬猜进分母）
-    let (direction_accuracy, total_samples) = if selective {
-        (actionable_accuracy, total_act)
-    } else {
-        (all_day_accuracy, total_all)
-    };
-
     let up_hit_rate = pct(up_hits, up_total);
     let down_hit_rate = pct(down_hits, down_total);
+    let up_hit_rate_actionable = pct(up_hits_act, up_total_act);
+    let down_hit_rate_actionable = pct(down_hits_act, down_total_act);
+
+    // 主指标始终按「全部预测日」统计；有效口径另列
+    let direction_accuracy = all_day_accuracy;
+    let total_samples = total_all;
 
     let msg_note = if needs_message {
         if uses_message {
@@ -144,19 +158,35 @@ pub async fn run_compose(
 
     let summary = if selective {
         format!(
-            "消息面主策略 · 有效信号 {} / 全样本 {} 日{}：有效准确率 {:.1}%（全样本硬猜 {:.1}%）；高置信 {} 次 / {:.1}%。弱信号日不计入整体。",
-            total_act,
+            "近 {} 个交易日回测（回看 {} 日{}）：全样本准确率 {:.1}%（{} / {}）；有效信号 {} 次 / {:.1}%；高置信 {} 次 / {:.1}%。看涨全量 {:.1}% / 有效 {:.1}%；看跌全量 {:.1}% / 有效 {:.1}%。",
             total_all,
+            lookback,
             msg_note,
-            actionable_accuracy,
             all_day_accuracy,
+            correct_all,
+            total_all,
+            total_act,
+            actionable_accuracy,
             hc_total,
             high_confidence_accuracy,
+            up_hit_rate,
+            up_hit_rate_actionable,
+            down_hit_rate,
+            down_hit_rate_actionable,
         )
     } else {
         format!(
-            "近 {} 个交易日组合回测（回看 {} 日{}）：整体 {:.1}%；高置信 {} 次 / {:.1}%。",
-            total_all, lookback, msg_note, direction_accuracy, hc_total, high_confidence_accuracy,
+            "近 {} 个交易日组合回测（回看 {} 日{}）：整体 {:.1}%；高置信 {} 次 / {:.1}%。看涨 {:.1}%（有效 {:.1}%）；看跌 {:.1}%（有效 {:.1}%）。",
+            total_all,
+            lookback,
+            msg_note,
+            direction_accuracy,
+            hc_total,
+            high_confidence_accuracy,
+            up_hit_rate,
+            up_hit_rate_actionable,
+            down_hit_rate,
+            down_hit_rate_actionable,
         )
     };
 
@@ -171,6 +201,12 @@ pub async fn run_compose(
         selective_mode: selective,
         up_hit_rate,
         down_hit_rate,
+        up_hit_rate_actionable,
+        down_hit_rate_actionable,
+        up_samples: up_total,
+        down_samples: down_total,
+        up_samples_actionable: up_total_act,
+        down_samples_actionable: down_total_act,
         high_confidence_samples: hc_total,
         high_confidence_accuracy,
         high_confidence_threshold: threshold,
@@ -242,6 +278,12 @@ fn empty_result(stock: &Stock, algorithm: &str, bar_count: usize, lookback: usiz
         selective_mode: false,
         up_hit_rate: 0.0,
         down_hit_rate: 0.0,
+        up_hit_rate_actionable: 0.0,
+        down_hit_rate_actionable: 0.0,
+        up_samples: 0,
+        down_samples: 0,
+        up_samples_actionable: 0,
+        down_samples_actionable: 0,
         high_confidence_samples: 0,
         high_confidence_accuracy: 0.0,
         high_confidence_threshold: predictor::HIGH_CONF_THRESHOLD,
