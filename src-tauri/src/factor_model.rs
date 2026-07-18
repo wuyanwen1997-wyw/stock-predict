@@ -123,6 +123,7 @@ pub fn compute_styled(bars: &[DailyBar], style: FactorStyle) -> Option<FactorSna
             ma20,
             momentum1,
             volume_ratio,
+            atr_pct(bars, 14),
         ),
         FactorStyle::Default => score_factors(
             price,
@@ -185,7 +186,7 @@ pub fn to_signal(factors: &FactorSnapshot) -> FactorSignal {
 }
 
 /// 宽基指数 ETF：站上 MA20 + 隔日反向 + 均线排列 − 过度偏离
-/// （510980：前 120 日训练 / 近 120 日 OOS ≈ 60%）
+/// （510980：前 120 日训练 / 近 120 日 OOS ≈ 60%；高波动再加重隔日反向 ≈ 60.8%）
 fn score_factors_index(
     price: f64,
     ma5: f64,
@@ -193,6 +194,7 @@ fn score_factors_index(
     ma20: f64,
     momentum1: f64,
     volume_ratio: f64,
+    atr_pct: f64,
 ) -> (f64, Vec<String>) {
     let mut score = 0.0;
     let mut hints = Vec::new();
@@ -207,11 +209,11 @@ fn score_factors_index(
     }
 
     // 隔日反向（权重 1.0，宽基最稳贡献）
+    let fade = if momentum1 > 0.0 { -1.0 } else { 1.0 };
+    score += fade;
     if momentum1 > 0.0 {
-        score -= 1.0;
         hints.push(format!("隔日反向·昨涨{:+.1}%", momentum1 * 100.0));
     } else {
-        score += 1.0;
         hints.push(format!("隔日反向·昨跌{:+.1}%", momentum1 * 100.0));
     }
 
@@ -235,6 +237,12 @@ fn score_factors_index(
         hints.push(format!("偏离MA20 {:+.1}%", ma_dev * 100.0));
     }
 
+    // 高波动日：隔日反向更可信（OOS +0.8pp）
+    if atr_pct > 0.015 {
+        score += 0.5 * fade;
+        hints.push(format!("高波动ATR{:.1}%", atr_pct * 100.0));
+    }
+
     // 放量时减弱追价（量能对次日收益 IC 偏负）
     if volume_ratio > 1.5 {
         if momentum1 > 0.0 {
@@ -245,6 +253,25 @@ fn score_factors_index(
 
     hints.insert(0, "宽基因子".into());
     (score.clamp(-2.5, 2.5), hints)
+}
+
+/// 近 14 日真实波幅占收盘价比例（简化 ATR%）
+fn atr_pct(bars: &[DailyBar], period: usize) -> f64 {
+    if bars.len() < period + 1 {
+        return 0.0;
+    }
+    let start = bars.len() - period;
+    let mut sum = 0.0;
+    for i in start..bars.len() {
+        let h = bars[i].high;
+        let l = bars[i].low;
+        let prev = bars[i - 1].close;
+        let tr = (h - l).max((h - prev).abs()).max((l - prev).abs());
+        if bars[i].close > 0.0 {
+            sum += tr / bars[i].close;
+        }
+    }
+    sum / period as f64
 }
 
 fn score_factors(
