@@ -18,7 +18,8 @@ export function SignalBreakdown({ signals }: Props) {
       <div className="mb-4">
         <h3 className="text-base font-semibold text-slate-100">信号明细</h3>
         <p className="mt-1 text-xs text-slate-500">
-          各信号源独立打分后按权重融合；消息面可按公告日期参与回测，资讯/政策/美股仍仅实时
+          各信号源独立打分后按权重融合。宽基上消息面仅在「有方向且与多因子一致」时计入；
+          若明细显示「未计入」，开关消息面主概率可以不变。
         </p>
       </div>
 

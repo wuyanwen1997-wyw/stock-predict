@@ -79,7 +79,17 @@ export function ProbabilityPanel({ prediction, backtest }: Props) {
     predicted,
     high_confidence,
     high_confidence_threshold,
+    horizon_days,
   } = prediction;
+  const horizon = horizon_days && horizon_days > 1 ? horizon_days : 1;
+  const title =
+    horizon <= 1
+      ? "下一交易日涨跌概率"
+      : `未来 ${horizon} 个交易日累计涨跌概率`;
+  const subtitle =
+    horizon <= 1
+      ? `预测日期 ${prediction.predict_date} · 二分类（涨 / 跌）`
+      : `截止 ${prediction.predict_date} · 区间累计涨跌二分类`;
 
   const bullish = predicted === "up";
   const leadProb = Math.max(up_probability, down_probability);
@@ -137,9 +147,9 @@ export function ProbabilityPanel({ prediction, backtest }: Props) {
       <div className="rounded-2xl border border-white/5 bg-slate-900/50 p-6 backdrop-blur-sm">
         <div className="mb-6 flex items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold text-slate-100">下一交易日涨跌概率</h2>
+            <h2 className="text-lg font-semibold text-slate-100">{title}</h2>
             <p className="mt-1 text-sm text-slate-500">
-              预测日期 {prediction.predict_date} · 二分类（涨 / 跌）
+              {subtitle}
               <span className="text-slate-600"> · 周末/节假日自动顺延</span>
             </p>
           </div>

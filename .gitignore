@@ -12,6 +12,11 @@ Thumbs.db
 .env.local
 src-tauri/gen/
 
+# secrets / local capital-flow cache
+**/tushare_token.txt
+src-tauri/resources/market_fund_flow.json
+**/market_fund_flow.json
+
 __pycache__/
 *.pyc
 

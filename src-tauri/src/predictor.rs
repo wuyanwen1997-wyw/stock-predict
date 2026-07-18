@@ -65,17 +65,43 @@ pub fn next_trading_day_from_today() -> NaiveDate {
     next_trading_day(Local::now().date_naive())
 }
 
+/// 预测跨度：1=次日，2–5=多日累计涨跌
+pub fn clamp_horizon(days: u32) -> u32 {
+    days.clamp(1, 5)
+}
+
+/// 从 `from` 起第 n 个交易日（n≥1）
+pub fn nth_trading_day(from: NaiveDate, n: u32) -> NaiveDate {
+    let mut d = from;
+    for _ in 0..n.max(1) {
+        d = next_trading_day(d);
+    }
+    d
+}
+
 /// 直播预测：组合策略（含消息/政策/美股等非回测源）
 pub async fn predict_compose(
     stock: &Stock,
     bars: &[DailyBar],
     current_price: f64,
     compose: &StrategyCompose,
+    horizon_days: u32,
 ) -> PredictionResult {
     let compose = strategy::normalize_compose(compose);
     let lookback = compose.lookback_days;
-    let ensemble = strategy::evaluate_live(stock, bars, &compose).await;
-    build_result(stock, bars, current_price, lookback, "compose", next_trading_day_from_today(), ensemble)
+    let horizon = clamp_horizon(horizon_days);
+    let ensemble = strategy::evaluate_live(stock, bars, &compose, horizon).await;
+    let predict_date = nth_trading_day(Local::now().date_naive(), horizon);
+    build_result(
+        stock,
+        bars,
+        current_price,
+        lookback,
+        "compose",
+        predict_date,
+        horizon,
+        ensemble,
+    )
 }
 
 /// 历史单点预测（仅可回测信号源）
@@ -92,8 +118,17 @@ pub fn predict_compose_historical(
     let as_of = bars
         .last()
         .and_then(|b| crate::cninfo::parse_flexible_date(&b.date));
-    let ensemble = strategy::evaluate_historical(stock, bars, &compose, message, as_of);
-    build_result(stock, bars, current_price, lookback, "compose", predict_date, ensemble)
+    let ensemble = strategy::evaluate_historical(stock, bars, &compose, message, None, as_of, 1);
+    build_result(
+        stock,
+        bars,
+        current_price,
+        lookback,
+        "compose",
+        predict_date,
+        1,
+        ensemble,
+    )
 }
 
 pub fn predict_direction_compose(
@@ -101,9 +136,19 @@ pub fn predict_direction_compose(
     bars: &[DailyBar],
     compose: &StrategyCompose,
     message: Option<&MessageArchive>,
+    capital_flow: Option<&crate::capital_flow::CapitalFlowArchive>,
     as_of: Option<NaiveDate>,
+    horizon_days: u32,
 ) -> DirectionSignal {
-    let ensemble = strategy::evaluate_historical(stock, bars, compose, message, as_of);
+    let ensemble = strategy::evaluate_historical(
+        stock,
+        bars,
+        compose,
+        message,
+        capital_flow,
+        as_of,
+        clamp_horizon(horizon_days),
+    );
     DirectionSignal {
         up_probability: ensemble.up_probability,
         down_probability: ensemble.down_probability,
@@ -141,7 +186,7 @@ pub fn predict(
         return build_from_internal(stock, algorithm, current_price, lookback as u32, predict_date, signal, window);
     }
 
-    let ensemble = strategy::evaluate_historical(stock, bars, &compose, None, None);
+    let ensemble = strategy::evaluate_historical(stock, bars, &compose, None, None, None, 1);
     build_result(
         stock,
         bars,
@@ -149,6 +194,7 @@ pub fn predict(
         lookback_days,
         algorithm,
         next_trading_day_from_today(),
+        1,
         ensemble,
     )
 }
@@ -180,7 +226,7 @@ pub fn predict_direction(
             high_confidence: is_high_confidence(signal.up_probability, signal.down_probability),
         };
     }
-    predict_direction_compose(stock, bars, &compose, None, None)
+    predict_direction_compose(stock, bars, &compose, None, None, None, 1)
 }
 
 fn build_result(
@@ -190,9 +236,11 @@ fn build_result(
     lookback_days: u32,
     algorithm: &str,
     predict_date: NaiveDate,
+    horizon_days: u32,
     ensemble: EnsembleSignal,
 ) -> PredictionResult {
     let lookback = factor_model::clamp_lookback(lookback_days);
+    let horizon = clamp_horizon(horizon_days);
     let seed = hash_seed(&stock.code, algorithm, predict_date);
     let volatility = market_vol(bars, lookback);
     let trend_bias = ((ensemble.up_probability - ensemble.down_probability) / 100.0 * 0.03).clamp(-0.03, 0.03);
@@ -236,11 +284,18 @@ fn build_result(
         .filter(|c| c.weight_normalized > 0.0)
         .count();
 
+    let horizon_label = if horizon <= 1 {
+        "下一交易日".to_string()
+    } else {
+        format!("未来 {horizon} 个交易日累计")
+    };
+
     let summary = if ensemble.summary_hint.is_empty() {
         format!(
-            "组合策略（{} 个信号源 · 近 {} 日）预测 {} {} {}，上涨 {:.1}% / 下跌 {:.1}%。",
+            "组合策略（{} 个信号源 · 近 {} 日 · {}）预测 {} {} {}，上涨 {:.1}% / 下跌 {:.1}%。",
             active,
             lookback,
+            horizon_label,
             stock.name,
             predict_date.format("%Y-%m-%d"),
             bias_label,
@@ -249,9 +304,10 @@ fn build_result(
         )
     } else {
         format!(
-            "组合策略（{} 个信号源 · 近 {} 日）预测 {} {} {}，上涨 {:.1}% / 下跌 {:.1}%。明细：{}。",
+            "组合策略（{} 个信号源 · 近 {} 日 · {}）预测 {} {} {}，上涨 {:.1}% / 下跌 {:.1}%。明细：{}。",
             active,
             lookback,
+            horizon_label,
             stock.name,
             predict_date.format("%Y-%m-%d"),
             bias_label,
@@ -277,6 +333,7 @@ fn build_result(
         low_open,
         summary,
         signals: ensemble.contributions,
+        horizon_days: horizon,
     }
 }
 
@@ -309,7 +366,16 @@ fn build_from_internal(
     };
     let _ = signal.volatility;
     let _ = signal.trend_bias;
-    build_result(stock, &[], current_price, lookback, algorithm, predict_date, ensemble)
+    build_result(
+        stock,
+        &[],
+        current_price,
+        lookback,
+        algorithm,
+        predict_date,
+        1,
+        ensemble,
+    )
 }
 
 fn placeholder_signal(

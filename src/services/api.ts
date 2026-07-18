@@ -24,12 +24,14 @@ export async function analyzeStock(
   algorithm?: string,
   lookbackDays?: number,
   compose?: StrategyCompose,
+  horizonDays?: number,
 ) {
   return invoke<AnalysisResult>("analyze_stock", {
     stock,
     algorithm,
     lookbackDays,
     compose,
+    horizonDays,
   });
 }
 
@@ -38,12 +40,14 @@ export async function predictStock(
   algorithm?: string,
   lookbackDays?: number,
   compose?: StrategyCompose,
+  horizonDays?: number,
 ) {
   return invoke<PredictionResult>("predict_stock", {
     stock,
     algorithm,
     lookbackDays,
     compose,
+    horizonDays,
   });
 }
 
@@ -56,8 +60,15 @@ export async function backtestStock(
   algorithm?: string,
   days?: number,
   compose?: StrategyCompose,
+  horizonDays?: number,
 ) {
-  return invoke<BacktestResult>("backtest_stock", { stock, algorithm, days, compose });
+  return invoke<BacktestResult>("backtest_stock", {
+    stock,
+    algorithm,
+    days,
+    compose,
+    horizonDays,
+  });
 }
 
 export async function listAlgorithms() {
@@ -70,4 +81,21 @@ export async function listStrategySources() {
 
 export async function defaultStrategyCompose() {
   return invoke<StrategyCompose>("default_strategy_compose");
+}
+
+export async function defaultStrategyComposeForStock(stock: Stock) {
+  return invoke<StrategyCompose>("default_strategy_compose_for_stock", { stock });
+}
+
+export type TushareTokenStatus = {
+  configured: boolean;
+  hint: string;
+};
+
+export async function getTushareTokenStatus() {
+  return invoke<TushareTokenStatus>("get_tushare_token_status");
+}
+
+export async function setTushareToken(token: string) {
+  return invoke<TushareTokenStatus>("set_tushare_token", { token });
 }

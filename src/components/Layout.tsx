@@ -30,11 +30,28 @@ export function Layout() {
 
       {/* Compact top brand strip */}
       <header className="relative z-10 flex h-11 shrink-0 items-center gap-2.5 border-b border-white/5 bg-slate-950/80 px-3 backdrop-blur-xl">
-        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-emerald-400 to-cyan-500 text-xs font-bold text-slate-950">
-          S
+        <div className="flex h-7 w-7 items-center justify-center overflow-hidden rounded-md bg-gradient-to-br from-indigo-950 via-emerald-800 to-amber-700/80 shadow-sm shadow-emerald-500/25 ring-1 ring-white/10">
+          <svg viewBox="0 0 32 32" className="h-4 w-4" aria-hidden>
+            <defs>
+              <radialGradient id="orb" cx="40%" cy="35%" r="65%">
+                <stop offset="0%" stopColor="#ecfdf5" />
+                <stop offset="55%" stopColor="#34d399" />
+                <stop offset="100%" stopColor="#312e81" />
+              </radialGradient>
+            </defs>
+            <circle cx="16" cy="16" r="10" fill="url(#orb)" opacity="0.95" />
+            <path
+              d="M10 20 L14 14 L18 17 L22 10"
+              fill="none"
+              stroke="#fef3c7"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold tracking-wide">StockPredict</div>
+          <div className="text-sm font-semibold tracking-wide">以太测</div>
         </div>
         <div className="truncate text-[11px] text-slate-500">
           {loading

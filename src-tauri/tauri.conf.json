@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "StockPredict",
+  "productName": "以太测",
   "version": "0.1.0",
   "identifier": "com.stockpredict.app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "StockPredict",
+        "title": "以太测",
         "width": 1280,
         "height": 860,
         "minWidth": 1024,

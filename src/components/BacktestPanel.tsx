@@ -122,8 +122,11 @@ export function BacktestPanel({ result, loading }: Props) {
       <div className="mb-4">
         <h3 className="text-base font-semibold text-slate-100">历史预测回测</h3>
         <p className="mt-1 text-xs text-slate-500">
-          Walk-forward · 每个交易日预测次日涨跌 1 次 · 特征回看{" "}
-          {result?.lookback_days ?? 50} 日（≠回测天数）· 高置信 ≥
+          Walk-forward · 每个交易日预测
+          {(result?.horizon_days ?? 1) <= 1
+            ? "次日涨跌"
+            : `未来 ${result?.horizon_days} 日累计涨跌`}{" "}
+          1 次 · 特征回看 {result?.lookback_days ?? 50} 日（≠回测天数）· 高置信 ≥
           {result?.high_confidence_threshold?.toFixed(0) ?? 60}% · 有效 ≥{ACTIONABLE_LEAD}%
         </p>
       </div>

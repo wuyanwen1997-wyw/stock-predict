@@ -63,6 +63,11 @@ pub fn default_strategy_compose() -> StrategyCompose {
     strategy::default_compose()
 }
 
+#[tauri::command]
+pub fn default_strategy_compose_for_stock(stock: Stock) -> StrategyCompose {
+    strategy::normalize_compose(&strategy::default_compose_for_stock(&stock))
+}
+
 /// 一次请求完成：行情 + K线 + 组合预测 + 回测
 #[tauri::command]
 pub async fn analyze_stock(
@@ -70,16 +75,18 @@ pub async fn analyze_stock(
     algorithm: Option<String>,
     lookback_days: Option<u32>,
     compose: Option<StrategyCompose>,
+    horizon_days: Option<u32>,
 ) -> Result<AnalysisResult, String> {
     let mut compose = strategy::normalize_compose(&compose.unwrap_or_else(strategy::default_compose));
     if let Some(lb) = lookback_days {
         compose.lookback_days = lb;
     }
     let lookback = compose.lookback_days;
-    // 回看窗口用于单日特征；另拉足够 K 线，使 walk-forward 至少约 BACKTEST_HORIZON 个预测日
-    // 样本数 ≈ fetch_limit - lookback - 1
+    let horizon = predictor::clamp_horizon(horizon_days.unwrap_or(1));
+    // 回看窗口用于单日特征；另拉足够 K 线，使 walk-forward 至少约 BACKTEST_HORIZON 个预测样本
+    // 样本数 ≈ fetch_limit - lookback - horizon
     const BACKTEST_HORIZON: u32 = 120;
-    let fetch_limit = (lookback + BACKTEST_HORIZON + 1).max(lookback + 80);
+    let fetch_limit = (lookback + BACKTEST_HORIZON + horizon).max(lookback + 80 + horizon);
 
     let stock_list = [stock.clone()];
     let (quotes_result, klines_result) = tokio::join!(
@@ -100,10 +107,10 @@ pub async fn analyze_stock(
     let prediction = if algorithm.as_deref() == Some("placeholder_v1") {
         predictor::predict(&stock, "placeholder_v1", &klines, current_price, lookback)
     } else {
-        predictor::predict_compose(&stock, &klines, current_price, &compose).await
+        predictor::predict_compose(&stock, &klines, current_price, &compose, horizon).await
     };
 
-    let backtest_result = backtest::run_compose(&stock, &klines, &compose).await;
+    let backtest_result = backtest::run_compose(&stock, &klines, &compose, horizon).await;
 
     let chart_len = 90u32.max(lookback);
     let chart_klines = if klines.len() > chart_len as usize {
@@ -125,8 +132,9 @@ pub async fn predict_stock(
     algorithm: Option<String>,
     lookback_days: Option<u32>,
     compose: Option<StrategyCompose>,
+    horizon_days: Option<u32>,
 ) -> Result<PredictionResult, String> {
-    let result = analyze_stock(stock, algorithm, lookback_days, compose).await?;
+    let result = analyze_stock(stock, algorithm, lookback_days, compose, horizon_days).await?;
     Ok(result.prediction)
 }
 
@@ -141,16 +149,19 @@ pub async fn backtest_stock(
     algorithm: Option<String>,
     days: Option<u32>,
     compose: Option<StrategyCompose>,
+    horizon_days: Option<u32>,
 ) -> Result<BacktestResult, String> {
     let mut compose = strategy::normalize_compose(&compose.unwrap_or_else(strategy::default_compose));
     if let Some(d) = days {
         compose.lookback_days = d;
     }
     let _ = algorithm;
+    let horizon = predictor::clamp_horizon(horizon_days.unwrap_or(1));
     const BACKTEST_HORIZON: u32 = 120;
-    let fetch_limit = (compose.lookback_days + BACKTEST_HORIZON + 1).max(compose.lookback_days + 80);
+    let fetch_limit =
+        (compose.lookback_days + BACKTEST_HORIZON + horizon).max(compose.lookback_days + 80 + horizon);
     let bars = market::fetch_daily_klines(&stock, fetch_limit).await?;
-    Ok(backtest::run_compose(&stock, &bars, &compose).await)
+    Ok(backtest::run_compose(&stock, &bars, &compose, horizon).await)
 }
 
 #[tauri::command]
@@ -169,4 +180,31 @@ pub fn list_algorithms() -> Vec<AlgorithmInfo> {
             enabled: true,
         },
     ]
+}
+
+#[derive(serde::Serialize)]
+pub struct TushareTokenStatus {
+    pub configured: bool,
+    pub hint: String,
+}
+
+#[tauri::command]
+pub fn get_tushare_token_status() -> TushareTokenStatus {
+    let configured = crate::capital_flow::tushare_token_configured();
+    TushareTokenStatus {
+        configured,
+        hint: if configured {
+            "已配置（环境变量或本地文件）。有 Token 时优先用真·大盘主力净流入；否则用两市成交代理亦可回测。"
+                .into()
+        } else {
+            "未配置 Tushare。资金流仍可用「两市成交代理」做近期回测；配置 Token 后自动升级为真主力净流入。"
+                .into()
+        },
+    }
+}
+
+#[tauri::command]
+pub fn set_tushare_token(token: String) -> Result<TushareTokenStatus, String> {
+    crate::capital_flow::save_tushare_token(&token)?;
+    Ok(get_tushare_token_status())
 }

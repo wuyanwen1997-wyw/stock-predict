@@ -95,6 +95,15 @@ pub fn compute(bars: &[DailyBar]) -> Option<FactorSnapshot> {
 }
 
 pub fn compute_styled(bars: &[DailyBar], style: FactorStyle) -> Option<FactorSnapshot> {
+    compute_styled_for_horizon(bars, style, 1)
+}
+
+/// `horizon_days`：1=次日（原逻辑）；2–5=多日累计趋势（去掉隔日反向等短线项）
+pub fn compute_styled_for_horizon(
+    bars: &[DailyBar],
+    style: FactorStyle,
+    horizon_days: u32,
+) -> Option<FactorSnapshot> {
     if bars.len() < MIN_BARS {
         return None;
     }
@@ -111,30 +120,63 @@ pub fn compute_styled(bars: &[DailyBar], style: FactorStyle) -> Option<FactorSna
     let momentum1 = momentum(bars, 1).unwrap_or(0.0);
     let momentum5 = momentum(bars, 5)?;
     let momentum10 = momentum(bars, 10)?;
+    let h = horizon_days.clamp(1, 5) as usize;
+    let momentum_h = momentum(bars, h).unwrap_or(momentum5);
     let vol_period = 20.min(bars.len());
     let volume_ratio = volume_ratio(bars, vol_period)?;
     let volatility = market::calc_volatility(bars);
 
-    let (score, hints) = match style {
-        FactorStyle::IndexEtf => score_factors_index(
-            price,
-            ma5,
-            ma10,
-            ma20,
-            momentum1,
-            volume_ratio,
-            atr_pct(bars, 14),
-        ),
-        FactorStyle::Default => score_factors(
-            price,
-            ma5,
-            ma10,
-            ma20,
-            rsi14,
-            momentum5,
-            momentum10,
-            volume_ratio,
-        ),
+    let (score, hints) = if h <= 1 {
+        match style {
+            FactorStyle::IndexEtf => score_factors_index(
+                price,
+                ma5,
+                ma10,
+                ma20,
+                momentum1,
+                volume_ratio,
+                atr_pct(bars, 14),
+            ),
+            FactorStyle::Default => score_factors(
+                price,
+                ma5,
+                ma10,
+                ma20,
+                rsi14,
+                momentum5,
+                momentum10,
+                volume_ratio,
+            ),
+        }
+    } else {
+        match style {
+            // 宽基：近段 OOS 上，隔日反向模型对 2–4 日累计方向仍优于纯趋势动量；
+            // 多日专用趋势分会把命中率拉向 50%。个股仍走多日趋势分。
+            FactorStyle::IndexEtf => {
+                let (score, mut hints) = score_factors_index(
+                    price,
+                    ma5,
+                    ma10,
+                    ma20,
+                    momentum1,
+                    volume_ratio,
+                    atr_pct(bars, 14),
+                );
+                hints.insert(0, format!("宽基{h}日·沿用隔日模型"));
+                (score, hints)
+            }
+            FactorStyle::Default => score_factors_multiday(
+                price,
+                ma5,
+                ma10,
+                ma20,
+                rsi14,
+                momentum_h,
+                momentum10,
+                volume_ratio,
+                h,
+            ),
+        }
     };
 
     Some(FactorSnapshot {
@@ -252,6 +294,60 @@ fn score_factors_index(
     }
 
     hints.insert(0, "宽基因子".into());
+    (score.clamp(-2.5, 2.5), hints)
+}
+
+/// 个股多日：抬高与跨度对齐的动量，弱化 RSI 超买超卖（更偏均值回归/短线）
+fn score_factors_multiday(
+    price: f64,
+    ma5: f64,
+    ma10: f64,
+    ma20: f64,
+    rsi14: f64,
+    momentum_h: f64,
+    momentum10: f64,
+    volume_ratio: f64,
+    horizon: usize,
+) -> (f64, Vec<String>) {
+    let mut score = 0.0;
+    let mut hints = Vec::new();
+
+    if price > ma5 && ma5 > ma10 && ma10 > ma20 {
+        score += 1.0;
+        hints.push("均线多头排列".into());
+    } else if price < ma5 && ma5 < ma10 && ma10 < ma20 {
+        score -= 1.0;
+        hints.push("均线空头排列".into());
+    } else if price > ma20 {
+        score += 0.3;
+        hints.push("站上MA20".into());
+    } else {
+        score -= 0.3;
+        hints.push("跌破MA20".into());
+    }
+
+    score += (momentum_h * 12.0).clamp(-1.2, 1.2);
+    score += (momentum10 * 5.0).clamp(-0.6, 0.6);
+    hints.push(format!("{horizon}日动量 {:+.1}%", momentum_h * 100.0));
+
+    // RSI 仅作弱参考
+    if rsi14 < 28.0 {
+        score += 0.25;
+    } else if rsi14 > 72.0 {
+        score -= 0.25;
+    }
+
+    if volume_ratio > 1.4 {
+        if score > 0.0 {
+            score += 0.3;
+            hints.push("放量上涨".into());
+        } else if score < 0.0 {
+            score -= 0.3;
+            hints.push("放量下跌".into());
+        }
+    }
+
+    hints.insert(0, format!("{horizon}日趋势因子"));
     (score.clamp(-2.5, 2.5), hints)
 }
 

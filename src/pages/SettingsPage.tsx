@@ -1,6 +1,12 @@
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { useStockStore } from "@/stores/stockStore";
+import {
+  getTushareTokenStatus,
+  setTushareToken,
+  type TushareTokenStatus,
+} from "@/services/api";
 
 export function SettingsPage() {
   const algorithms = useStockStore((s) => s.algorithms);
@@ -10,6 +16,36 @@ export function SettingsPage() {
   const setLookbackDays = useStockStore((s) => s.setLookbackDays);
 
   const lookbackOptions = [25, 50, 60, 90, 120];
+  const [tokenInput, setTokenInput] = useState("");
+  const [tokenStatus, setTokenStatus] = useState<TushareTokenStatus | null>(null);
+  const [tokenMsg, setTokenMsg] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    getTushareTokenStatus()
+      .then(setTokenStatus)
+      .catch(() =>
+        setTokenStatus({
+          configured: false,
+          hint: "无法读取 Token 状态",
+        }),
+      );
+  }, []);
+
+  async function saveToken() {
+    setSaving(true);
+    setTokenMsg(null);
+    try {
+      const st = await setTushareToken(tokenInput.trim());
+      setTokenStatus(st);
+      setTokenInput("");
+      setTokenMsg(st.configured ? "已保存" : "已清除");
+    } catch (e) {
+      setTokenMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <div className="h-full min-h-0 overflow-y-auto p-6 lg:p-8">
@@ -45,6 +81,57 @@ export function SettingsPage() {
               {days} 日
             </button>
           ))}
+        </div>
+      </section>
+
+      <section className="mb-8">
+        <h2 className="mb-3 text-sm font-medium text-slate-300">Tushare Token（资金流）</h2>
+        <p className="mb-3 text-xs text-slate-500">
+          「资金流(主力)」默认用腾讯两市成交额做免费可回测代理。配置 Tushare（
+          <code className="text-slate-400">moneyflow_mkt_dc</code>
+          ）后自动升级为真·大盘主力净流入。也可设环境变量{" "}
+          <code className="text-slate-400">TUSHARE_TOKEN</code>。
+        </p>
+        <div className="rounded-2xl border border-white/5 bg-slate-900/50 p-4">
+          <p
+            className={cn(
+              "mb-3 text-xs",
+              tokenStatus?.configured ? "text-emerald-400" : "text-amber-400/90",
+            )}
+          >
+            {tokenStatus?.hint ?? "读取中…"}
+          </p>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              type="password"
+              autoComplete="off"
+              placeholder={tokenStatus?.configured ? "已配置，输入新 Token 可覆盖" : "粘贴 Tushare Token"}
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
+              className="min-w-0 flex-1 rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2.5 text-sm text-slate-200 outline-none placeholder:text-slate-600 focus:border-cyan-500/40"
+            />
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void saveToken()}
+              className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-2.5 text-sm font-medium text-cyan-300 transition hover:bg-cyan-500/20 disabled:opacity-50"
+            >
+              {saving ? "保存中…" : "保存"}
+            </button>
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => {
+                setTokenInput("");
+                void setTushareToken("").then(setTokenStatus);
+                setTokenMsg("已清除");
+              }}
+              className="rounded-xl border border-white/10 px-4 py-2.5 text-sm text-slate-400 transition hover:border-white/20 hover:text-slate-200 disabled:opacity-50"
+            >
+              清除
+            </button>
+          </div>
+          {tokenMsg && <p className="mt-2 text-xs text-slate-500">{tokenMsg}</p>}
         </div>
       </section>
 
@@ -93,8 +180,7 @@ export function SettingsPage() {
         <p className="font-medium text-slate-400">扩展说明</p>
         <ul className="mt-3 list-inside list-disc space-y-1.5 leading-relaxed">
           <li>因子模型：<code className="text-slate-400">src-tauri/src/factor_model.rs</code></li>
-          <li>预测入口：<code className="text-slate-400">src-tauri/src/predictor.rs</code></li>
-          <li>新增算法后在 <code className="text-slate-400">commands.rs</code> 的 list_algorithms 中注册</li>
+          <li>资金流：<code className="text-slate-400">src-tauri/src/capital_flow.rs</code></li>
           <li>股票列表：<code className="text-slate-400">src-tauri/resources/stocks.json</code></li>
         </ul>
       </div>

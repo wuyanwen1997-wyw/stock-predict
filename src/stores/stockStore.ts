@@ -18,6 +18,45 @@ import type {
 } from "@/types";
 
 const STRATEGY_MAP_KEY = "strategy_compose_by_stock_v1";
+const PREDICT_MODE_KEY = "predict_mode_v1";
+const PREDICT_HORIZON_KEY = "predict_horizon_days_v1";
+
+export type PredictMode = "daily" | "trend";
+
+const TREND_HORIZONS = [2, 3, 4, 5] as const;
+
+function loadPredictMode(): PredictMode {
+  try {
+    const v = localStorage.getItem(PREDICT_MODE_KEY);
+    if (v === "trend" || v === "daily") return v;
+  } catch {
+    /* ignore */
+  }
+  return "daily";
+}
+
+function loadHorizonDays(mode: PredictMode): number {
+  try {
+    const n = Number(localStorage.getItem(PREDICT_HORIZON_KEY));
+    if (mode === "daily") return 1;
+    if (TREND_HORIZONS.includes(n as (typeof TREND_HORIZONS)[number])) return n;
+  } catch {
+    /* ignore */
+  }
+  return mode === "trend" ? 3 : 1;
+}
+
+function persistPredictPrefs(mode: PredictMode, horizonDays: number) {
+  try {
+    localStorage.setItem(PREDICT_MODE_KEY, mode);
+    // 只持久化多日跨度，避免切回单日时覆盖用户上次选的 2–5 日
+    if (mode === "trend" && horizonDays >= 2) {
+      localStorage.setItem(PREDICT_HORIZON_KEY, String(horizonDays));
+    }
+  } catch {
+    /* ignore */
+  }
+}
 
 /** 统一用 6 位数字代码做存储键，避免 SH510980 / 510980 不一致 */
 function composeKey(code: string): string {
@@ -150,6 +189,10 @@ interface StockState {
   selectedStock: Stock | null;
   activeAlgorithm: string;
   lookbackDays: number;
+  /** daily=次日，trend=2–5 日累计趋势 */
+  predictMode: PredictMode;
+  /** 1 或 2–5 */
+  horizonDays: number;
   prediction: PredictionResult | null;
   klines: DailyBar[];
   backtest: BacktestResult | null;
@@ -165,11 +208,15 @@ interface StockState {
   selectStock: (stock: Stock) => void;
   setAlgorithm: (id: string) => void;
   setLookbackDays: (days: number) => void;
+  setPredictMode: (mode: PredictMode) => void;
+  setHorizonDays: (days: number) => void;
   getComposeForStock: (code: string) => StrategyCompose;
   updateCompose: (patch: Partial<StrategyCompose> | ((c: StrategyCompose) => StrategyCompose)) => void;
   toggleSource: (sourceId: string) => void;
   setSourceWeight: (sourceId: string, weight: number) => void;
   resetComposeForStock: () => void;
+  /** 应用按标的调优的推荐组合（宽基：多因子70+消息30） */
+  applyTunedComposeForStock: () => void;
   runPrediction: () => Promise<void>;
   loadStockAnalysis: () => Promise<void>;
   toggleWatchlist: (stock: Stock) => void;
@@ -191,6 +238,8 @@ export const useStockStore = create<StockState>((set, get) => ({
   selectedStock: null,
   activeAlgorithm: "compose",
   lookbackDays: 50,
+  predictMode: loadPredictMode(),
+  horizonDays: loadHorizonDays(loadPredictMode()),
   prediction: null,
   klines: [],
   backtest: null,
@@ -289,6 +338,30 @@ export const useStockStore = create<StockState>((set, get) => ({
     }
   },
 
+  setPredictMode: (mode) => {
+    const prevHorizon = get().horizonDays;
+    let horizonDays = 1;
+    if (mode === "trend") {
+      horizonDays =
+        prevHorizon >= 2 && prevHorizon <= 5
+          ? prevHorizon
+          : loadHorizonDays("trend");
+      if (horizonDays < 2) horizonDays = 3;
+    }
+    persistPredictPrefs(mode, horizonDays);
+    set({ predictMode: mode, horizonDays });
+    if (get().selectedStock) void get().runPrediction();
+  },
+
+  setHorizonDays: (days) => {
+    const mode = get().predictMode;
+    const horizonDays =
+      mode === "daily" ? 1 : Math.min(5, Math.max(2, Math.round(days)));
+    persistPredictPrefs(mode, horizonDays);
+    set({ horizonDays });
+    if (get().selectedStock) void get().runPrediction();
+  },
+
   getComposeForStock: (code) => {
     const { strategyMap, defaultCompose, lookbackDays } = get();
     const key = composeKey(code);
@@ -341,8 +414,28 @@ export const useStockStore = create<StockState>((set, get) => ({
     void get().runPrediction();
   },
 
+  applyTunedComposeForStock: () => {
+    const stock = get().selectedStock;
+    if (!stock) return;
+    void (async () => {
+      try {
+        const { defaultStrategyComposeForStock } = await import("@/services/api");
+        const tuned = await defaultStrategyComposeForStock(stock);
+        const strategyMap = upsertStrategyCompose(stock.code, tuned, get().strategyMap);
+        set({
+          strategyMap,
+          lookbackDays: tuned.lookback_days,
+        });
+        localStorage.setItem("lookbackDays", String(tuned.lookback_days));
+        void get().runPrediction();
+      } catch (e) {
+        set({ error: `应用调优组合失败: ${String(e)}` });
+      }
+    })();
+  },
+
   runPrediction: async () => {
-    const { selectedStock, activeAlgorithm, lookbackDays } = get();
+    const { selectedStock, activeAlgorithm, lookbackDays, horizonDays } = get();
     if (!selectedStock) return;
 
     const compose = get().getComposeForStock(selectedStock.code);
@@ -363,6 +456,7 @@ export const useStockStore = create<StockState>((set, get) => ({
         activeAlgorithm,
         lookbackDays,
         compose,
+        horizonDays,
       );
       if (get().analysisSeq !== seq) return;
 

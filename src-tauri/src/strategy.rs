@@ -1,3 +1,4 @@
+use crate::capital_flow::CapitalFlowArchive;
 use crate::cninfo::MessageArchive;
 use crate::factor_model;
 use crate::models::{DailyBar, SignalContribution, Stock};
@@ -62,7 +63,7 @@ pub fn catalog() -> Vec<StrategySourceInfo> {
             id: "momentum".into(),
             name: "趋势动量".into(),
             category: "技术面".into(),
-            description: "短中期动量；宽基ETF偏隔日反向。".into(),
+            description: "短中期动量；宽基ETF改为3日动量互补（不与多因子重复隔日反向）。".into(),
             backtestable: true,
             available: true,
         },
@@ -115,6 +116,15 @@ pub fn catalog() -> Vec<StrategySourceInfo> {
             backtestable: false,
             available: true,
         },
+        StrategySourceInfo {
+            id: "capital_flow".into(),
+            name: "资金流(主力)".into(),
+            category: "资金面".into(),
+            description: "优先大盘主力净流入；无 Token 时用两市成交额代理（免费可回测）；可回退北向净额。"
+                .into(),
+            backtestable: true,
+            available: true,
+        },
     ]
 }
 
@@ -122,14 +132,108 @@ pub fn default_compose() -> StrategyCompose {
     StrategyCompose {
         lookback_days: 50,
         sources: vec![
-            StrategySourceConfig { id: "factor".into(), enabled: true, weight: 35.0 },
-            StrategySourceConfig { id: "momentum".into(), enabled: true, weight: 20.0 },
-            StrategySourceConfig { id: "mean_reversion".into(), enabled: false, weight: 15.0 },
-            StrategySourceConfig { id: "volume".into(), enabled: true, weight: 15.0 },
-            StrategySourceConfig { id: "message".into(), enabled: false, weight: 15.0 },
-            StrategySourceConfig { id: "news".into(), enabled: false, weight: 15.0 },
-            StrategySourceConfig { id: "policy".into(), enabled: false, weight: 10.0 },
-            StrategySourceConfig { id: "us_market".into(), enabled: false, weight: 10.0 },
+            StrategySourceConfig {
+                id: "factor".into(),
+                enabled: true,
+                weight: 35.0,
+            },
+            StrategySourceConfig {
+                id: "momentum".into(),
+                enabled: true,
+                weight: 20.0,
+            },
+            StrategySourceConfig {
+                id: "mean_reversion".into(),
+                enabled: false,
+                weight: 15.0,
+            },
+            StrategySourceConfig {
+                id: "volume".into(),
+                enabled: true,
+                weight: 15.0,
+            },
+            StrategySourceConfig {
+                id: "message".into(),
+                enabled: false,
+                weight: 15.0,
+            },
+            StrategySourceConfig {
+                id: "news".into(),
+                enabled: false,
+                weight: 15.0,
+            },
+            StrategySourceConfig {
+                id: "policy".into(),
+                enabled: false,
+                weight: 10.0,
+            },
+            StrategySourceConfig {
+                id: "us_market".into(),
+                enabled: false,
+                weight: 10.0,
+            },
+            StrategySourceConfig {
+                id: "capital_flow".into(),
+                enabled: false,
+                weight: 15.0,
+            },
+        ],
+    }
+}
+
+/// 按标的推荐组合。宽基 ETF：多因子 70% + 消息面 30%（510980 离线 OOS ≈ 63.3%）
+pub fn default_compose_for_stock(stock: &Stock) -> StrategyCompose {
+    if factor_model::style_for_stock(stock) != factor_model::FactorStyle::IndexEtf {
+        return default_compose();
+    }
+    StrategyCompose {
+        lookback_days: 120,
+        sources: vec![
+            StrategySourceConfig {
+                id: "factor".into(),
+                enabled: true,
+                weight: 70.0,
+            },
+            StrategySourceConfig {
+                id: "momentum".into(),
+                enabled: false,
+                weight: 15.0,
+            },
+            StrategySourceConfig {
+                id: "mean_reversion".into(),
+                enabled: false,
+                weight: 15.0,
+            },
+            StrategySourceConfig {
+                id: "volume".into(),
+                enabled: false,
+                weight: 10.0,
+            },
+            StrategySourceConfig {
+                id: "message".into(),
+                enabled: true,
+                weight: 30.0,
+            },
+            StrategySourceConfig {
+                id: "news".into(),
+                enabled: false,
+                weight: 10.0,
+            },
+            StrategySourceConfig {
+                id: "policy".into(),
+                enabled: false,
+                weight: 10.0,
+            },
+            StrategySourceConfig {
+                id: "us_market".into(),
+                enabled: false,
+                weight: 10.0,
+            },
+            StrategySourceConfig {
+                id: "capital_flow".into(),
+                enabled: false,
+                weight: 15.0,
+            },
         ],
     }
 }
@@ -171,50 +275,87 @@ pub fn normalize_compose(compose: &StrategyCompose) -> StrategyCompose {
 }
 
 /// 现场评估组合（含非回测源）
+/// `horizon_days`：1=次日原逻辑；2–5=多日趋势专用信号（不影响单日）
 pub async fn evaluate_live(
     stock: &Stock,
     bars: &[DailyBar],
     compose: &StrategyCompose,
+    horizon_days: u32,
 ) -> EnsembleSignal {
     let compose = normalize_compose(compose);
     let lookback = factor_model::clamp_lookback(compose.lookback_days);
     let window = factor_model::take_lookback(bars, lookback);
+    let horizon = horizon_days.clamp(1, 5);
+    let capital_archive = if compose_needs_capital_flow(&compose) {
+        crate::capital_flow::fetch_archive_cached().await.ok()
+    } else {
+        None
+    };
+    let as_of = chrono::Local::now().date_naive();
 
     let mut raw = Vec::new();
     for cfg in compose.sources.iter().filter(|s| s.enabled && s.weight > 0.0) {
-        let contrib = match cfg.id.as_str() {
-            "factor" => eval_factor(stock, window),
-            "momentum" => eval_momentum(stock, window),
-            "mean_reversion" => eval_mean_reversion(window),
-            "volume" => eval_volume(stock, window),
-            "message" => eval_message(stock).await,
-            "news" => eval_news().await,
-            "policy" => eval_policy().await,
-            "us_market" => eval_us_market().await,
-            _ => neutral(&cfg.id, "未知信号源", "跳过"),
+        let (w, contrib) = match cfg.id.as_str() {
+            "factor" => (cfg.weight, eval_factor(stock, window, horizon)),
+            "momentum" => (cfg.weight, eval_momentum(stock, window, horizon)),
+            "mean_reversion" => (cfg.weight, eval_mean_reversion(window, horizon)),
+            "volume" => (cfg.weight, eval_volume(stock, window, horizon)),
+            "message" => (cfg.weight, eval_message(stock).await),
+            "news" => (cfg.weight, eval_news().await),
+            "policy" => (cfg.weight, eval_policy().await),
+            "us_market" => (cfg.weight, eval_us_market().await),
+            "capital_flow" => {
+                let c = match capital_archive.as_ref() {
+                    Some(archive) => eval_capital_flow(archive, as_of),
+                    None => contrib(
+                        "capital_flow",
+                        "资金流(主力)",
+                        "资金面",
+                        0.0,
+                        "资金流数据暂不可用".into(),
+                        "degraded",
+                    ),
+                };
+                let w = if c.status == "skip" { 0.0 } else { cfg.weight };
+                (w, c)
+            }
+            _ => (cfg.weight, neutral(&cfg.id, "未知信号源", "跳过")),
         };
-        raw.push((cfg.weight, contrib));
+        raw.push((w, contrib));
     }
 
     if raw.is_empty() {
         // 兜底：至少跑技术多因子
-        raw.push((1.0, eval_factor(stock, window)));
+        raw.push((1.0, eval_factor(stock, window, horizon)));
     }
 
+    if horizon <= 1 {
+        reconcile_index_momentum(stock, &mut raw);
+        reconcile_index_factor_message(stock, &mut raw);
+        reconcile_index_factor_capital(stock, &mut raw);
+    } else {
+        // 多日：先压短线噪声，再沿用宽基消息/资金门控（否则 30% 消息会把命中率拉向 50%）
+        reconcile_multiday_noise(&mut raw);
+        reconcile_index_factor_message(stock, &mut raw);
+        reconcile_index_factor_capital(stock, &mut raw);
+    }
     fuse(raw)
 }
 
-/// 历史回测用：仅可回测信号源（消息面需传入公告归档）
+/// 历史回测用：仅可回测信号源（消息面/资金流需传入归档）
 pub fn evaluate_historical(
     stock: &Stock,
     bars: &[DailyBar],
     compose: &StrategyCompose,
     message: Option<&MessageArchive>,
+    capital_flow: Option<&CapitalFlowArchive>,
     as_of: Option<NaiveDate>,
+    horizon_days: u32,
 ) -> EnsembleSignal {
     let compose = normalize_compose(compose);
     let lookback = factor_model::clamp_lookback(compose.lookback_days);
     let window = factor_model::take_lookback(bars, lookback);
+    let horizon = horizon_days.clamp(1, 5);
     let catalog = catalog();
     let as_of_date = as_of.or_else(|| {
         window
@@ -228,16 +369,16 @@ pub fn evaluate_historical(
         if info.map(|i| i.backtestable) != Some(true) {
             continue;
         }
-        let contrib = match cfg.id.as_str() {
-            "factor" => eval_factor(stock, window),
-            "momentum" => eval_momentum(stock, window),
-            "mean_reversion" => eval_mean_reversion(window),
-            "volume" => eval_volume(stock, window),
+        let (w, contrib) = match cfg.id.as_str() {
+            "factor" => (cfg.weight, eval_factor(stock, window, horizon)),
+            "momentum" => (cfg.weight, eval_momentum(stock, window, horizon)),
+            "mean_reversion" => (cfg.weight, eval_mean_reversion(window, horizon)),
+            "volume" => (cfg.weight, eval_volume(stock, window, horizon)),
             "message" => {
                 let Some(day) = as_of_date else {
                     continue;
                 };
-                match message {
+                let c = match message {
                     Some(archive) => eval_message_from_archive(stock, archive, day),
                     None => contrib(
                         "message",
@@ -247,17 +388,45 @@ pub fn evaluate_historical(
                         "公告归档拉取失败，按中性计入".into(),
                         "degraded",
                     ),
-                }
+                };
+                (cfg.weight, c)
+            }
+            "capital_flow" => {
+                let Some(day) = as_of_date else {
+                    continue;
+                };
+                let c = match capital_flow {
+                    Some(archive) => eval_capital_flow(archive, day),
+                    None => contrib(
+                        "capital_flow",
+                        "资金流(主力)",
+                        "资金面",
+                        0.0,
+                        "资金流归档拉取失败，按中性跳过".into(),
+                        "degraded",
+                    ),
+                };
+                let w = if c.status == "skip" { 0.0 } else { cfg.weight };
+                (w, c)
             }
             _ => continue,
         };
-        raw.push((cfg.weight, contrib));
+        raw.push((w, contrib));
     }
 
     if raw.is_empty() {
-        raw.push((1.0, eval_factor(stock, window)));
+        raw.push((1.0, eval_factor(stock, window, horizon)));
     }
 
+    if horizon <= 1 {
+        reconcile_index_momentum(stock, &mut raw);
+        reconcile_index_factor_message(stock, &mut raw);
+        reconcile_index_factor_capital(stock, &mut raw);
+    } else {
+        reconcile_multiday_noise(&mut raw);
+        reconcile_index_factor_message(stock, &mut raw);
+        reconcile_index_factor_capital(stock, &mut raw);
+    }
     fuse(raw)
 }
 
@@ -267,6 +436,14 @@ pub fn compose_needs_message(compose: &StrategyCompose) -> bool {
         .sources
         .iter()
         .any(|s| s.id == "message" && s.enabled && s.weight > 0.0)
+}
+
+pub fn compose_needs_capital_flow(compose: &StrategyCompose) -> bool {
+    let compose = normalize_compose(compose);
+    compose
+        .sources
+        .iter()
+        .any(|s| s.id == "capital_flow" && s.enabled && s.weight > 0.0)
 }
 
 /// 是否几乎只开了消息面（宽基指数适合「有效信号」口径回测）
@@ -289,8 +466,148 @@ pub fn compose_is_message_primary(compose: &StrategyCompose) -> bool {
     msg_w / all_w.max(1e-9) >= 0.85
 }
 
+/// 多日模式：压低隔夜/短线噪声源权重，避免把趋势概率拉向 50%
+fn reconcile_multiday_noise(raw: &mut Vec<(f64, SignalContribution)>) {
+    for (w, c) in raw.iter_mut() {
+        let scale = match c.id.as_str() {
+            // 消息面按次日关键词训练，多日先大幅降权；宽基再经 reconcile_index_factor_message 门控
+            "message" => 0.25,
+            "us_market" | "capital_flow" => 0.25,
+            "mean_reversion" => 0.2,
+            "news" | "policy" => 0.35,
+            _ => 1.0,
+        };
+        if scale < 1.0 && *w > 0.0 {
+            *w *= scale;
+            if !c.note.contains("多日降权") {
+                c.note = format!("{} · 多日降权×{:.2}", c.note, scale);
+            }
+        }
+    }
+}
+
+/// 宽基：技术多因子与趋势动量方向冲突时，动量降为中性，避免稀释隔日反向优势
+fn reconcile_index_momentum(stock: &Stock, raw: &mut Vec<(f64, SignalContribution)>) {
+    if factor_model::style_for_stock(stock) != factor_model::FactorStyle::IndexEtf {
+        return;
+    }
+    let factor_up = raw
+        .iter()
+        .find(|(_, c)| c.id == "factor" && c.status == "ok")
+        .map(|(_, c)| c.up_probability);
+    let Some(factor_up) = factor_up else {
+        return;
+    };
+    let Some((mom_w, mom)) = raw
+        .iter_mut()
+        .find(|(_, c)| c.id == "momentum" && c.status == "ok")
+    else {
+        return;
+    };
+    if (mom.up_probability - 50.0).abs() < 1.0 {
+        return;
+    }
+    let factor_bull = factor_up >= 50.0;
+    let mom_bull = mom.up_probability >= 50.0;
+    if factor_bull == mom_bull {
+        return;
+    }
+    mom.up_probability = 50.0;
+    mom.down_probability = 50.0;
+    mom.confidence = 40.0;
+    mom.note = format!("{} · 与多因子冲突已降权", mom.note);
+    *mom_w = 0.0;
+}
+
+/// 宽基：消息面仅在「有方向且与多因子一致」时计入；弱信号/冲突则权重清零（开启≈不影响主概率）
+fn reconcile_index_factor_message(stock: &Stock, raw: &mut Vec<(f64, SignalContribution)>) {
+    if factor_model::style_for_stock(stock) != factor_model::FactorStyle::IndexEtf {
+        return;
+    }
+    let factor_up = raw
+        .iter()
+        .find(|(_, c)| c.id == "factor" && c.status == "ok")
+        .map(|(_, c)| c.up_probability);
+    let Some(factor_up) = factor_up else {
+        return;
+    };
+    let Some((msg_w, msg)) = raw
+        .iter_mut()
+        .find(|(_, c)| c.id == "message" && (c.status == "ok" || c.status == "degraded"))
+    else {
+        return;
+    };
+    let lead = msg.up_probability.max(msg.down_probability);
+    // 中性/过弱：不计入融合（否则 50% 占权重会悄悄把主概率往 50 拉，或看起来「开了没变化」）
+    if lead < 55.0 {
+        msg.up_probability = 50.0;
+        msg.down_probability = 50.0;
+        msg.confidence = 40.0;
+        msg.note = format!("{} · 弱信号未计入（无有效关键词或强度不足）", msg.note);
+        msg.status = "skip".into();
+        *msg_w = 0.0;
+        return;
+    }
+    let factor_bull = factor_up >= 50.0;
+    let msg_bull = msg.up_probability >= 50.0;
+    if factor_bull != msg_bull {
+        msg.up_probability = 50.0;
+        msg.down_probability = 50.0;
+        msg.confidence = 40.0;
+        msg.note = format!("{} · 与多因子冲突未计入", msg.note);
+        msg.status = "skip".into();
+        *msg_w = 0.0;
+    }
+}
+
+/// 宽基：资金流仅在「有方向且与多因子一致」时计入；弱信号/冲突则权重清零，避免把主概率往 50% 拉
+fn reconcile_index_factor_capital(stock: &Stock, raw: &mut Vec<(f64, SignalContribution)>) {
+    if factor_model::style_for_stock(stock) != factor_model::FactorStyle::IndexEtf {
+        return;
+    }
+    let factor_up = raw
+        .iter()
+        .find(|(_, c)| c.id == "factor" && c.status == "ok")
+        .map(|(_, c)| c.up_probability);
+    let Some(factor_up) = factor_up else {
+        return;
+    };
+    let Some((cap_w, cap)) = raw
+        .iter_mut()
+        .find(|(_, c)| c.id == "capital_flow" && (c.status == "ok" || c.status == "degraded"))
+    else {
+        return;
+    };
+    let lead = cap.up_probability.max(cap.down_probability);
+    if lead < 55.0 {
+        cap.up_probability = 50.0;
+        cap.down_probability = 50.0;
+        cap.confidence = 40.0;
+        cap.note = format!("{} · 弱信号未计入", cap.note);
+        cap.status = "skip".into();
+        *cap_w = 0.0;
+        return;
+    }
+    let factor_bull = factor_up >= 50.0;
+    let cap_bull = cap.up_probability >= 50.0;
+    if factor_bull != cap_bull {
+        cap.up_probability = 50.0;
+        cap.down_probability = 50.0;
+        cap.confidence = 40.0;
+        cap.note = format!("{} · 与多因子冲突未计入", cap.note);
+        cap.status = "skip".into();
+        *cap_w = 0.0;
+    }
+}
+
 fn fuse(raw: Vec<(f64, SignalContribution)>) -> EnsembleSignal {
-    let total_w: f64 = raw.iter().map(|(w, _)| *w).sum::<f64>().max(1e-9);
+    // 权重为 0 的源仍展示明细，但不参与概率融合
+    let total_w: f64 = raw
+        .iter()
+        .filter(|(w, _)| *w > 0.0)
+        .map(|(w, _)| *w)
+        .sum::<f64>()
+        .max(1e-9);
     let mut contributions = Vec::new();
     let mut up_acc = 0.0;
     let mut down_acc = 0.0;
@@ -298,13 +615,15 @@ fn fuse(raw: Vec<(f64, SignalContribution)>) -> EnsembleSignal {
     let mut hints = Vec::new();
 
     for (w, mut c) in raw {
-        let nw = w / total_w;
+        let nw = if w > 0.0 { w / total_w } else { 0.0 };
         c.weight = w;
         c.weight_normalized = (nw * 100.0 * 10.0).round() / 10.0;
-        up_acc += c.up_probability * nw;
-        down_acc += c.down_probability * nw;
-        conf_acc += c.confidence * nw;
-        if c.status == "ok" && !c.note.is_empty() {
+        if w > 0.0 {
+            up_acc += c.up_probability * nw;
+            down_acc += c.down_probability * nw;
+            conf_acc += c.confidence * nw;
+        }
+        if (c.status == "ok" || c.status == "skip") && !c.note.is_empty() {
             hints.push(format!("{}: {}", c.name, c.note));
         }
         contributions.push(c);
@@ -413,9 +732,9 @@ fn neutral(id: &str, name: &str, note: &str) -> SignalContribution {
     }
 }
 
-fn eval_factor(stock: &Stock, bars: &[DailyBar]) -> SignalContribution {
+fn eval_factor(stock: &Stock, bars: &[DailyBar], horizon_days: u32) -> SignalContribution {
     let style = factor_model::style_for_stock(stock);
-    match factor_model::compute_styled(bars, style) {
+    match factor_model::compute_styled_for_horizon(bars, style, horizon_days) {
         Some(f) => {
             let note = if f.hints.is_empty() {
                 format!("综合得分 {:+.2}", f.score)
@@ -428,45 +747,95 @@ fn eval_factor(stock: &Stock, bars: &[DailyBar]) -> SignalContribution {
     }
 }
 
-fn eval_momentum(stock: &Stock, bars: &[DailyBar]) -> SignalContribution {
+fn eval_capital_flow(archive: &CapitalFlowArchive, as_of: NaiveDate) -> SignalContribution {
+    let sig = crate::capital_flow::evaluate_as_of(archive, as_of);
+    if sig.status == "skip" {
+        return SignalContribution {
+            id: "capital_flow".into(),
+            name: "资金流(主力)".into(),
+            category: "资金面".into(),
+            up_probability: 50.0,
+            down_probability: 50.0,
+            confidence: 40.0,
+            weight: 0.0,
+            weight_normalized: 0.0,
+            note: sig.note,
+            status: "skip".into(),
+        };
+    }
+    contrib(
+        "capital_flow",
+        "资金流(主力)",
+        "资金面",
+        sig.score,
+        sig.note,
+        sig.status,
+    )
+}
+
+fn eval_momentum(stock: &Stock, bars: &[DailyBar], horizon_days: u32) -> SignalContribution {
     if bars.len() < 15 {
         return neutral("momentum", "趋势动量", "K线不足");
     }
     let n = bars.len();
     let c0 = bars[n - 1].close;
     let c1 = bars[n.saturating_sub(2)].close;
+    let c3 = bars[n.saturating_sub(4)].close;
     let c5 = bars[n.saturating_sub(6)].close;
     let c10 = bars[n.saturating_sub(11)].close;
-    if c1 <= 0.0 || c5 <= 0.0 || c10 <= 0.0 {
+    if c1 <= 0.0 || c3 <= 0.0 || c5 <= 0.0 || c10 <= 0.0 {
         return neutral("momentum", "趋势动量", "价格异常");
     }
     let m1 = (c0 - c1) / c1;
+    let m3 = (c0 - c3) / c3;
     let m5 = (c0 - c5) / c5;
     let m10 = (c0 - c10) / c10;
+    let h = horizon_days.clamp(1, 5) as usize;
+    let ch = bars[n.saturating_sub(h + 1)].close;
+    let mh = if ch > 0.0 { (c0 - ch) / ch } else { m5 };
 
-    // 宽基：隔日反向为主，中期动量为辅；个股仍以趋势动量为主
-    let score = if factor_model::style_for_stock(stock) == factor_model::FactorStyle::IndexEtf {
-        let fade = if m1 > 0.0 { -1.0 } else { 1.0 };
-        (fade + m5 * 4.0 + m10 * 2.0).clamp(-2.5, 2.5)
+    let (score, note) = if h <= 1 {
+        // 单日：原逻辑不变
+        if factor_model::style_for_stock(stock) == factor_model::FactorStyle::IndexEtf {
+            let score = if m3.abs() < 0.008 {
+                0.0
+            } else {
+                (m3 * 12.0).clamp(-1.0, 1.0)
+            };
+            (
+                score,
+                format!(
+                    "宽基互补·3日动量 {:+.1}%（不重复隔日反向）",
+                    m3 * 100.0
+                ),
+            )
+        } else {
+            (
+                (m5 * 12.0 + m10 * 6.0).clamp(-2.5, 2.5),
+                format!(
+                    "1日 {:+.1}% / 5日 {:+.1}% / 10日 {:+.1}%",
+                    m1 * 100.0,
+                    m5 * 100.0,
+                    m10 * 100.0
+                ),
+            )
+        }
     } else {
-        (m5 * 12.0 + m10 * 6.0).clamp(-2.5, 2.5)
+        // 多日：与预测跨度对齐的动量为主
+        let score = (mh * 14.0 + m10 * 5.0).clamp(-2.5, 2.5);
+        (
+            score,
+            format!(
+                "{h}日动量 {:+.1}% / 10日 {:+.1}%",
+                mh * 100.0,
+                m10 * 100.0
+            ),
+        )
     };
-    contrib(
-        "momentum",
-        "趋势动量",
-        "技术面",
-        score,
-        format!(
-            "1日 {:+.1}% / 5日 {:+.1}% / 10日 {:+.1}%",
-            m1 * 100.0,
-            m5 * 100.0,
-            m10 * 100.0
-        ),
-        "ok",
-    )
+    contrib("momentum", "趋势动量", "技术面", score, note, "ok")
 }
 
-fn eval_mean_reversion(bars: &[DailyBar]) -> SignalContribution {
+fn eval_mean_reversion(bars: &[DailyBar], horizon_days: u32) -> SignalContribution {
     if bars.len() < 25 {
         return neutral("mean_reversion", "均值回归", "K线不足");
     }
@@ -487,6 +856,10 @@ fn eval_mean_reversion(bars: &[DailyBar]) -> SignalContribution {
     } else if factors.rsi14 < 30.0 {
         score += 0.6;
     }
+    // 多日累计更偏趋势延续，均值回归只保留弱信号
+    if horizon_days > 1 {
+        score *= 0.35;
+    }
     contrib(
         "mean_reversion",
         "均值回归",
@@ -497,7 +870,7 @@ fn eval_mean_reversion(bars: &[DailyBar]) -> SignalContribution {
     )
 }
 
-fn eval_volume(stock: &Stock, bars: &[DailyBar]) -> SignalContribution {
+fn eval_volume(stock: &Stock, bars: &[DailyBar], horizon_days: u32) -> SignalContribution {
     if bars.len() < 20 {
         return neutral("volume", "量价确认", "K线不足");
     }
@@ -517,8 +890,19 @@ fn eval_volume(stock: &Stock, bars: &[DailyBar]) -> SignalContribution {
     };
 
     let index = factor_model::style_for_stock(stock) == factor_model::FactorStyle::IndexEtf;
-    let (score, note) = if index {
-        // 宽基：放量后更偏谨慎（量能与次日收益偏负相关）
+    let (score, note) = if horizon_days > 1 {
+        // 多日：放量跟随趋势确认
+        if vr > 1.4 && chg > 0.005 {
+            (0.9, format!("放量确认上涨 · 量比 {:.1}", vr))
+        } else if vr > 1.4 && chg < -0.005 {
+            (-0.9, format!("放量确认下跌 · 量比 {:.1}", vr))
+        } else if vr < 0.7 {
+            (0.1 * chg.signum(), format!("缩量整理 · 量比 {:.1}", vr))
+        } else {
+            (chg * 6.0, format!("量能中性 · 量比 {:.1}", vr))
+        }
+    } else if index {
+        // 宽基单日：放量后更偏谨慎（量能与次日收益偏负相关）
         if vr > 1.4 && chg > 0.005 {
             (-0.6, format!("放量追涨慎用 · 量比 {:.1}", vr))
         } else if vr > 1.4 && chg < -0.005 {

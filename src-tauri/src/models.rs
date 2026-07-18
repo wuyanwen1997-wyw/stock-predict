@@ -88,6 +88,13 @@ pub struct PredictionResult {
     pub summary: String,
     #[serde(default)]
     pub signals: Vec<SignalContribution>,
+    /// 预测跨度：1=次日，2–5=多日累计涨跌
+    #[serde(default = "default_horizon_days")]
+    pub horizon_days: u32,
+}
+
+fn default_horizon_days() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +156,9 @@ pub struct BacktestResult {
     pub high_confidence_threshold: f64,
     pub flat_threshold_pct: f64,
     pub lookback_days: u32,
+    /// 预测跨度：1=次日，2–5=多日累计
+    #[serde(default = "default_horizon_days")]
+    pub horizon_days: u32,
     pub summary: String,
     pub records: Vec<BacktestRecord>,
 }

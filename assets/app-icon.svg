@@ -1,13 +1,45 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
   <defs>
-    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#34d399"/>
-      <stop offset="100%" stop-color="#0891b2"/>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#064e3b"/>
+      <stop offset="55%" stop-color="#0f766e"/>
+      <stop offset="100%" stop-color="#155e75"/>
+    </linearGradient>
+    <linearGradient id="barUp" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#6ee7b7"/>
+      <stop offset="100%" stop-color="#ecfdf5"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#67e8f9" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.2"/>
     </linearGradient>
   </defs>
-  <rect width="512" height="512" rx="96" fill="#030712"/>
-  <rect x="64" y="64" width="384" height="384" rx="72" fill="url(#g)"/>
-  <polyline points="120,340 200,260 280,300 392,180" fill="none" stroke="#fafafa" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="392" cy="180" r="20" fill="#fafafa"/>
+
+  <!-- App tile -->
+  <rect width="512" height="512" rx="112" fill="#020617"/>
+  <rect x="28" y="28" width="456" height="456" rx="96" fill="url(#bg)"/>
+
+  <!-- Soft highlight -->
+  <ellipse cx="180" cy="140" rx="140" ry="80" fill="#a7f3d0" opacity="0.12"/>
+
+  <!-- Candlesticks -->
+  <g stroke-linecap="round">
+    <!-- wick -->
+    <line x1="148" y1="250" x2="148" y2="360" stroke="#a7f3d0" stroke-width="10" opacity="0.85"/>
+    <line x1="230" y1="210" x2="230" y2="340" stroke="#a7f3d0" stroke-width="10" opacity="0.85"/>
+    <line x1="312" y1="170" x2="312" y2="300" stroke="#ecfeff" stroke-width="10" opacity="0.9"/>
+    <!-- bodies -->
+    <rect x="126" y="280" width="44" height="70" rx="8" fill="url(#barUp)" opacity="0.85"/>
+    <rect x="208" y="240" width="44" height="90" rx="8" fill="url(#barUp)"/>
+    <rect x="290" y="190" width="44" height="100" rx="8" fill="#ecfeff"/>
+  </g>
+
+  <!-- Prediction arc / radar -->
+  <path d="M360 300 A92 92 0 0 1 420 220" fill="none" stroke="url(#glow)" stroke-width="14" stroke-linecap="round"/>
+  <circle cx="420" cy="220" r="18" fill="#ecfeff"/>
+  <circle cx="420" cy="220" r="8" fill="#0891b2"/>
+
+  <!-- Tiny trend tip -->
+  <path d="M372 268 L420 220 L452 252" fill="none" stroke="#ecfeff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

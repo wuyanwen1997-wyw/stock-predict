@@ -12,14 +12,17 @@ pub async fn run_compose(
     stock: &Stock,
     bars: &[DailyBar],
     compose: &StrategyCompose,
+    horizon_days: u32,
 ) -> BacktestResult {
     let compose = strategy::normalize_compose(compose);
     let lookback = factor_model::clamp_lookback(compose.lookback_days);
-    if bars.len() < lookback + 2 {
-        return empty_result(stock, "compose", bars.len(), lookback);
+    let horizon = predictor::clamp_horizon(horizon_days) as usize;
+    if bars.len() < lookback + horizon + 1 {
+        return empty_result(stock, "compose", bars.len(), lookback, horizon);
     }
 
     let needs_message = strategy::compose_needs_message(&compose);
+    let needs_capital = strategy::compose_needs_capital_flow(&compose);
     let selective = strategy::compose_is_message_primary(&compose);
     let (message_archive, message_err) = if needs_message {
         match load_message_archive(stock, bars, lookback).await {
@@ -31,6 +34,17 @@ pub async fn run_compose(
     };
     let message_ref = message_archive.as_ref();
     let uses_message = message_ref.map(|a| !a.is_empty()).unwrap_or(false);
+
+    let (capital_archive, capital_err) = if needs_capital {
+        match crate::capital_flow::fetch_archive_cached().await {
+            Ok(a) => (Some(a), None),
+            Err(e) => (None, Some(e)),
+        }
+    } else {
+        (None, None)
+    };
+    let capital_ref = capital_archive.as_ref();
+    let uses_capital = capital_ref.map(|a| a.usable_days() > 0).unwrap_or(false);
 
     let mut records = Vec::new();
     let mut correct_all = 0u32;
@@ -48,7 +62,7 @@ pub async fn run_compose(
     let mut hc_correct = 0u32;
     let mut hc_total = 0u32;
 
-    for i in lookback..(bars.len() - 1) {
+    for i in lookback..(bars.len() - horizon) {
         let window = &bars[i + 1 - lookback..=i];
         let current_price = bars[i].close;
         if current_price <= 0.0 {
@@ -61,10 +75,12 @@ pub async fn run_compose(
             window,
             &compose,
             if needs_message { message_ref } else { None },
+            if needs_capital { capital_ref } else { None },
             as_of,
+            horizon as u32,
         );
-        let next_close = bars[i + 1].close;
-        let change_pct = (next_close - current_price) / current_price * 100.0;
+        let future_close = bars[i + horizon].close;
+        let change_pct = (future_close - current_price) / current_price * 100.0;
         let actual = classify_change(change_pct);
         let is_correct = signal.predicted == actual;
         let lead = signal.up_probability.max(signal.down_probability);
@@ -114,9 +130,9 @@ pub async fn run_compose(
 
         records.push(BacktestRecord {
             date: bars[i].date.clone(),
-            predict_date: bars[i + 1].date.clone(),
+            predict_date: bars[i + horizon].date.clone(),
             close_price: round2(current_price),
-            next_close: round2(next_close),
+            next_close: round2(future_close),
             change_pct: round2(change_pct),
             predicted: signal.predicted,
             actual: actual.to_string(),
@@ -141,27 +157,53 @@ pub async fn run_compose(
     let direction_accuracy = all_day_accuracy;
     let total_samples = total_all;
 
-    let msg_note = if needs_message {
+    let mut extra_notes = String::new();
+    if needs_message {
         if uses_message {
-            format!(
+            extra_notes.push_str(&format!(
                 "；消息面已纳入（公告 {} 条）",
                 message_archive.as_ref().map(|a| a.len()).unwrap_or(0)
-            )
+            ));
         } else if let Some(err) = message_err.as_ref() {
-            format!("；消息面公告拉取失败: {err}")
+            extra_notes.push_str(&format!("；消息面公告拉取失败: {err}"));
         } else {
-            "；消息面启用但区间内无公告，按中性计入".into()
+            extra_notes.push_str("；消息面启用但区间内无公告，按中性计入");
         }
+    }
+    if needs_capital {
+        if uses_capital {
+            let a = capital_archive.as_ref().unwrap();
+            extra_notes.push_str(&format!(
+                "；资金流已纳入（主力 {} / 成交代理 {} / 北向 {}；{}）",
+                a.market_days(),
+                a.activity_days(),
+                a.north_days(),
+                if a.source_note.is_empty() {
+                    "—"
+                } else {
+                    &a.source_note
+                }
+            ));
+        } else if let Some(err) = capital_err.as_ref() {
+            extra_notes.push_str(&format!("；资金流拉取失败: {err}"));
+        } else {
+            extra_notes.push_str("；资金流启用但无可用历史（请配置 Tushare Token）");
+        }
+    }
+
+    let horizon_note = if horizon <= 1 {
+        "次日".to_string()
     } else {
-        String::new()
+        format!("{horizon} 日累计")
     };
 
     let summary = if selective {
         format!(
-            "近 {} 个交易日回测（回看 {} 日{}）：全样本准确率 {:.1}%（{} / {}）；有效信号 {} 次 / {:.1}%；高置信 {} 次 / {:.1}%。看涨全量 {:.1}% / 有效 {:.1}%；看跌全量 {:.1}% / 有效 {:.1}%。",
+            "近 {} 个样本回测（回看 {} 日 · 预测{}{}）：全样本准确率 {:.1}%（{} / {}）；有效信号 {} 次 / {:.1}%；高置信 {} 次 / {:.1}%。看涨全量 {:.1}% / 有效 {:.1}%；看跌全量 {:.1}% / 有效 {:.1}%。",
             total_all,
             lookback,
-            msg_note,
+            horizon_note,
+            extra_notes,
             all_day_accuracy,
             correct_all,
             total_all,
@@ -176,10 +218,11 @@ pub async fn run_compose(
         )
     } else {
         format!(
-            "近 {} 个交易日组合回测（回看 {} 日{}）：整体 {:.1}%；高置信 {} 次 / {:.1}%。看涨 {:.1}%（有效 {:.1}%）；看跌 {:.1}%（有效 {:.1}%）。",
+            "近 {} 个样本组合回测（回看 {} 日 · 预测{}{}）：整体 {:.1}%；高置信 {} 次 / {:.1}%。看涨 {:.1}%（有效 {:.1}%）；看跌 {:.1}%（有效 {:.1}%）。",
             total_all,
             lookback,
-            msg_note,
+            horizon_note,
+            extra_notes,
             direction_accuracy,
             hc_total,
             high_confidence_accuracy,
@@ -212,6 +255,7 @@ pub async fn run_compose(
         high_confidence_threshold: threshold,
         flat_threshold_pct: 0.0,
         lookback_days: lookback as u32,
+        horizon_days: horizon as u32,
         summary,
         records,
     }
@@ -243,7 +287,7 @@ pub async fn run(stock: &Stock, algorithm: &str, bars: &[DailyBar], lookback_day
             s.enabled = s.id == "factor";
         }
     }
-    run_compose(stock, bars, &compose).await
+    run_compose(stock, bars, &compose, 1).await
 }
 
 fn classify_change(change_pct: f64) -> &'static str {
@@ -266,7 +310,13 @@ fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
-fn empty_result(stock: &Stock, algorithm: &str, bar_count: usize, lookback: usize) -> BacktestResult {
+fn empty_result(
+    stock: &Stock,
+    algorithm: &str,
+    bar_count: usize,
+    lookback: usize,
+    horizon: usize,
+) -> BacktestResult {
     BacktestResult {
         stock: stock.clone(),
         algorithm: algorithm.into(),
@@ -289,10 +339,11 @@ fn empty_result(stock: &Stock, algorithm: &str, bar_count: usize, lookback: usiz
         high_confidence_threshold: predictor::HIGH_CONF_THRESHOLD,
         flat_threshold_pct: 0.0,
         lookback_days: lookback as u32,
+        horizon_days: horizon as u32,
         summary: format!(
             "历史数据不足（仅 {} 根 K 线，至少需要 {} 根）",
             bar_count,
-            lookback + 2
+            lookback + horizon + 1
         ),
         records: vec![],
     }

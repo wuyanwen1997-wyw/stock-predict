@@ -194,6 +194,7 @@ export function StrategyComposer({
   const toggleSource = useStockStore((s) => s.toggleSource);
   const setSourceWeight = useStockStore((s) => s.setSourceWeight);
   const resetComposeForStock = useStockStore((s) => s.resetComposeForStock);
+  const applyTunedComposeForStock = useStockStore((s) => s.applyTunedComposeForStock);
   const predicting = useStockStore((s) => s.predicting);
 
   const compose = useMemo((): StrategyCompose | null => {
@@ -238,14 +239,25 @@ export function StrategyComposer({
             <p className="mt-1 text-[10px] text-amber-300/80 sm:text-xs">信号源说明未加载</p>
           )}
         </div>
-        <button
-          type="button"
-          onClick={() => resetComposeForStock()}
-          disabled={predicting}
-          className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-[10px] text-slate-400 transition hover:bg-white/5 disabled:opacity-50 sm:text-xs"
-        >
-          重置
-        </button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => applyTunedComposeForStock()}
+            disabled={predicting}
+            title="宽基推荐：技术多因子 70% + 消息面 30%"
+            className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[10px] text-cyan-200 transition hover:bg-cyan-500/20 disabled:opacity-50 sm:text-xs"
+          >
+            调优组合
+          </button>
+          <button
+            type="button"
+            onClick={() => resetComposeForStock()}
+            disabled={predicting}
+            className="rounded-lg border border-white/10 px-2 py-1 text-[10px] text-slate-400 transition hover:bg-white/5 disabled:opacity-50 sm:text-xs"
+          >
+            重置
+          </button>
+        </div>
       </div>
 
       <div

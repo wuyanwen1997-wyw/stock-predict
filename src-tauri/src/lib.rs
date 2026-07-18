@@ -1,4 +1,5 @@
 pub mod backtest;
+pub mod capital_flow;
 pub mod cninfo;
 pub mod commands;
 pub mod factor_model;
@@ -21,6 +22,9 @@ pub fn run() {
             commands::list_algorithms,
             commands::list_strategy_sources,
             commands::default_strategy_compose,
+            commands::default_strategy_compose_for_stock,
+            commands::get_tushare_token_status,
+            commands::set_tushare_token,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

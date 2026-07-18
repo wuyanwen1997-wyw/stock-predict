@@ -11,6 +11,7 @@ import { cn, formatPrice } from "@/lib/utils";
 import { useStockStore } from "@/stores/stockStore";
 
 export const LOOKBACK_OPTIONS = [25, 50, 60, 90, 120] as const;
+export const TREND_HORIZON_OPTIONS = [2, 3, 4, 5] as const;
 
 const COMPOSE_COLLAPSED_KEY = "predict_compose_collapsed_v1";
 const COMPOSE_HEIGHT_KEY = "predict_compose_height_v1";
@@ -43,6 +44,10 @@ export function PredictPage() {
   const loadingBacktest = useStockStore((s) => s.loadingBacktest);
   const lookbackDays = useStockStore((s) => s.lookbackDays);
   const setLookbackDays = useStockStore((s) => s.setLookbackDays);
+  const predictMode = useStockStore((s) => s.predictMode);
+  const setPredictMode = useStockStore((s) => s.setPredictMode);
+  const horizonDays = useStockStore((s) => s.horizonDays);
+  const setHorizonDays = useStockStore((s) => s.setHorizonDays);
   const runPrediction = useStockStore((s) => s.runPrediction);
   const watchlist = useStockStore((s) => s.watchlist);
   const toggleWatchlist = useStockStore((s) => s.toggleWatchlist);
@@ -156,6 +161,57 @@ export function PredictPage() {
           <Link to="/" className="text-[11px] text-cyan-400 hover:underline">
             换股
           </Link>
+          <div className="flex max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border border-white/5 bg-slate-900/60 p-0.5">
+            <button
+              type="button"
+              onClick={() => setPredictMode("daily")}
+              disabled={predicting}
+              className={cn(
+                "shrink-0 rounded-md px-2 py-1 text-[11px] font-medium transition",
+                predictMode === "daily"
+                  ? "bg-emerald-500/20 text-emerald-300"
+                  : "text-slate-500",
+                predicting && "opacity-50",
+              )}
+            >
+              单日
+            </button>
+            <button
+              type="button"
+              onClick={() => setPredictMode("trend")}
+              disabled={predicting}
+              className={cn(
+                "shrink-0 rounded-md px-2 py-1 text-[11px] font-medium transition",
+                predictMode === "trend"
+                  ? "bg-emerald-500/20 text-emerald-300"
+                  : "text-slate-500",
+                predicting && "opacity-50",
+              )}
+            >
+              多日
+            </button>
+          </div>
+          {predictMode === "trend" && (
+            <div className="flex max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border border-white/5 bg-slate-900/60 p-0.5">
+              {TREND_HORIZON_OPTIONS.map((days) => (
+                <button
+                  key={days}
+                  type="button"
+                  onClick={() => setHorizonDays(days)}
+                  disabled={predicting}
+                  className={cn(
+                    "shrink-0 rounded-md px-2 py-1 text-[11px] font-medium transition",
+                    horizonDays === days
+                      ? "bg-violet-500/20 text-violet-300"
+                      : "text-slate-500",
+                    predicting && "opacity-50",
+                  )}
+                >
+                  {days}日
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border border-white/5 bg-slate-900/60 p-0.5">
             {LOOKBACK_OPTIONS.map((days) => (
               <button

@@ -66,6 +66,8 @@ export interface BacktestResult {
   high_confidence_threshold: number;
   flat_threshold_pct: number;
   lookback_days: number;
+  /** 预测跨度：1=次日，2–5=多日累计 */
+  horizon_days?: number;
   summary: string;
   records: BacktestRecord[];
 }
@@ -135,6 +137,8 @@ export interface PredictionResult {
   low_open: ScenarioForecast;
   summary: string;
   signals?: SignalContribution[];
+  /** 预测跨度：1=次日，2–5=多日累计 */
+  horizon_days?: number;
 }
 
 export interface AlgorithmInfo {
