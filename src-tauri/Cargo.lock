@@ -3083,6 +3083,7 @@ name = "stock-predict"
 version = "0.1.2"
 dependencies = [
  "chrono",
+ "encoding_rs",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

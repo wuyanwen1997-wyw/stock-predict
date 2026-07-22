@@ -17,7 +17,9 @@ for stock in &mut stocks {
 ```
 
 - `fetch_stock_quotes(&[Stock]) -> HashMap<code, StockQuote>`
-- 字段含 price / change_pct / OHLC / volume / turnover（东财 `f2…f18`）
+- 字段含 price / change_pct / OHLC / volume / turnover
+- 拉取顺序：**腾讯**（`qt.gtimg.cn` / `sqt.gtimg.cn`）→ **新浪**（`hq.sinajs.cn`）→ **东财** push2 多节点（最后兜底）
+- 成功判据：至少一条 `price > 0`；全源失败返回明确错误字符串
 
 ## K 线
 
