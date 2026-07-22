@@ -181,7 +181,8 @@ pub fn default_compose() -> StrategyCompose {
     }
 }
 
-/// 按标的推荐组合。宽基 ETF：多因子 70% + 消息面 30%（510980 离线 OOS ≈ 63.3%）
+/// 按标的推荐组合。宽基 ETF：多因子 70% + 消息面 30%
+/// （510980 离线 OOS 整体准确率 ≈ 61.7%；以全样本方向命中为准，不以高置信口径择优）
 pub fn default_compose_for_stock(stock: &Stock) -> StrategyCompose {
     if factor_model::style_for_stock(stock) != factor_model::FactorStyle::IndexEtf {
         return default_compose();
@@ -519,18 +520,12 @@ fn reconcile_index_momentum(stock: &Stock, raw: &mut Vec<(f64, SignalContributio
     *mom_w = 0.0;
 }
 
-/// 宽基：消息面仅在「有方向且与多因子一致」时计入；弱信号/冲突则权重清零（开启≈不影响主概率）
+/// 宽基：消息面弱信号不计入（避免 50% 稀释主概率）；与多因子冲突仍计入。
+/// 网格搜索（510980）显示：冲突门控会压低全样本整体准确率；仅弱信号门控 OOS ≈ 61.7%。
 fn reconcile_index_factor_message(stock: &Stock, raw: &mut Vec<(f64, SignalContribution)>) {
     if factor_model::style_for_stock(stock) != factor_model::FactorStyle::IndexEtf {
         return;
     }
-    let factor_up = raw
-        .iter()
-        .find(|(_, c)| c.id == "factor" && c.status == "ok")
-        .map(|(_, c)| c.up_probability);
-    let Some(factor_up) = factor_up else {
-        return;
-    };
     let Some((msg_w, msg)) = raw
         .iter_mut()
         .find(|(_, c)| c.id == "message" && (c.status == "ok" || c.status == "degraded"))
@@ -538,23 +533,12 @@ fn reconcile_index_factor_message(stock: &Stock, raw: &mut Vec<(f64, SignalContr
         return;
     };
     let lead = msg.up_probability.max(msg.down_probability);
-    // 中性/过弱：不计入融合（否则 50% 占权重会悄悄把主概率往 50 拉，或看起来「开了没变化」）
+    // 中性/过弱：不计入融合（否则 50% 占权重会悄悄把主概率往 50 拉）
     if lead < 55.0 {
         msg.up_probability = 50.0;
         msg.down_probability = 50.0;
         msg.confidence = 40.0;
         msg.note = format!("{} · 弱信号未计入（无有效关键词或强度不足）", msg.note);
-        msg.status = "skip".into();
-        *msg_w = 0.0;
-        return;
-    }
-    let factor_bull = factor_up >= 50.0;
-    let msg_bull = msg.up_probability >= 50.0;
-    if factor_bull != msg_bull {
-        msg.up_probability = 50.0;
-        msg.down_probability = 50.0;
-        msg.confidence = 40.0;
-        msg.note = format!("{} · 与多因子冲突未计入", msg.note);
         msg.status = "skip".into();
         *msg_w = 0.0;
     }

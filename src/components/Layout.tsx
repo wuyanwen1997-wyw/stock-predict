@@ -5,6 +5,7 @@ import { useStockStore } from "@/stores/stockStore";
 
 const links = [
   { to: "/", label: "首页", icon: "⌂" },
+  { to: "/screen", label: "选股", icon: "◎" },
   { to: "/predict", label: "预测", icon: "◈" },
   { to: "/watchlist", label: "自选", icon: "★" },
   { to: "/settings", label: "设置", icon: "⚙" },
@@ -68,7 +69,7 @@ export function Layout() {
       </main>
 
       {/* Compact bottom nav */}
-      <nav className="relative z-20 grid h-12 shrink-0 grid-cols-4 border-t border-white/5 bg-slate-950/95 px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl">
+      <nav className="relative z-20 grid h-12 shrink-0 grid-cols-5 border-t border-white/5 bg-slate-950/95 px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl">
         {links.map((link) => (
           <NavLink
             key={link.to}

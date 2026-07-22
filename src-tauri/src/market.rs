@@ -1,12 +1,29 @@
 use crate::models::{DailyBar, Stock, StockQuote};
 use std::collections::HashMap;
 
-const QUOTE_URL: &str = "https://push2.eastmoney.com/api/qt/ulist.np/get";
+/// 东财行情多节点：push2 在部分网络会直接断连，需 delay / 编号节点兜底
+const QUOTE_URLS: &[&str] = &[
+    "https://push2delay.eastmoney.com/api/qt/ulist.np/get",
+    "https://push2.eastmoney.com/api/qt/ulist.np/get",
+    "https://82.push2.eastmoney.com/api/qt/ulist.np/get",
+    "https://push2delay.eastmoney.com/api/qt/ulist/get",
+];
 const KLINE_URL: &str = "https://push2his.eastmoney.com/api/qt/stock/kline/get";
 const TENCENT_KLINE_URL: &str = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get";
 const SINA_KLINE_URL: &str = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData";
-const HOT_URL: &str = "https://emappdata.eastmoney.com/stockrank/getAllCurrentList";
+/// 东方财富股吧人气榜（浏览/讨论热度）
+const HOT_EM_URL: &str = "https://emappdata.eastmoney.com/stockrank/getAllCurrentList";
+/// 东方财富股吧飙升榜（排名快速上升）
+const HOT_EM_SURGE_URL: &str = "https://emappdata.eastmoney.com/stockrank/getAllHisRcList";
+/// 同花顺小时热榜（搜索/关注热度）
+const HOT_THS_URL: &str =
+    "https://dq.10jqka.com.cn/fuyao/hot_list_data/out/hot_list/v1/stock";
 const SEARCH_URL: &str = "https://searchapi.eastmoney.com/api/suggest/get";
+const HOT_EM_GLOBAL_ID: &str = "786e4c21-70dc-435a-93bb-38";
+/// Reciprocal Rank Fusion 常数（越大越平滑）
+const HOT_RRF_K: f64 = 60.0;
+const HTTP_RETRY: u32 = 2;
+const HTTP_RETRY_DELAY_MS: u64 = 400;
 
 const USER_AGENT_DESKTOP: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const USER_AGENT_MOBILE: &str = "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
@@ -21,8 +38,8 @@ fn user_agent() -> &'static str {
 
 fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(12))
+        .connect_timeout(std::time::Duration::from_secs(6))
         .pool_idle_timeout(std::time::Duration::from_secs(30))
         .user_agent(user_agent())
         .build()
@@ -34,6 +51,20 @@ fn apply_browser_headers(builder: reqwest::RequestBuilder) -> reqwest::RequestBu
         .header("Accept", "application/json, text/plain, */*")
         .header("Accept-Language", "zh-CN,zh;q=0.9")
         .header("Referer", "https://quote.eastmoney.com/")
+}
+
+fn log_warn(scope: &str, msg: &str) {
+    eprintln!("[stock-predict:{scope}] {msg}");
+}
+
+async fn sleep_retry(attempt: u32) {
+    if attempt == 0 {
+        return;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(
+        HTTP_RETRY_DELAY_MS * u64::from(attempt),
+    ))
+    .await;
 }
 
 pub fn to_tencent_symbol(market: &str, code: &str) -> String {
@@ -146,7 +177,7 @@ fn parse_f64(v: &serde_json::Value) -> Option<f64> {
     }
 }
 
-/// 批量拉取实时行情
+/// 批量拉取实时行情（多节点 + 重试）
 pub async fn fetch_stock_quotes(stocks: &[Stock]) -> Result<HashMap<String, StockQuote>, String> {
     if stocks.is_empty() {
         return Ok(HashMap::new());
@@ -158,66 +189,207 @@ pub async fn fetch_stock_quotes(stocks: &[Stock]) -> Result<HashMap<String, Stoc
         .collect();
 
     let client = client()?;
-    let resp = apply_browser_headers(client.get(QUOTE_URL))
-        .query(&[
-            ("fltt", "2"),
-            ("invt", "2"),
-            ("fields", "f2,f3,f4,f12,f14,f15,f16,f17,f18,f5,f6"),
-            ("secids", &secids.join(",")),
-        ])
-        .send()
-        .await
-        .map_err(|e| format!("行情请求失败: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("行情响应异常: {e}"))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("行情解析失败: {e}"))?;
+    let resp = fetch_quote_response(&client, &secids.join(",")).await?;
+    Ok(parse_quote_map(&resp))
+}
 
-    let mut map = HashMap::new();
-    if let Some(items) = resp
-        .pointer("/data/diff")
-        .and_then(|v| v.as_array())
-    {
-        for item in items {
-            let code = item
-                .get("f12")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            if code.is_empty() {
-                continue;
+async fn fetch_quote_response(
+    client: &reqwest::Client,
+    secids: &str,
+) -> Result<serde_json::Value, String> {
+    let mut errors = Vec::new();
+    for url in QUOTE_URLS {
+        for attempt in 0..HTTP_RETRY {
+            sleep_retry(attempt).await;
+            let result = apply_browser_headers(client.get(*url))
+                .query(&[
+                    ("fltt", "2"),
+                    ("invt", "2"),
+                    ("fields", "f2,f3,f4,f12,f14,f15,f16,f17,f18,f5,f6"),
+                    ("secids", secids),
+                ])
+                .send()
+                .await;
+
+            let resp = match result {
+                Ok(r) => r,
+                Err(e) => {
+                    let msg = format!("{url} 请求失败(尝试{}): {e}", attempt + 1);
+                    log_warn("quote", &msg);
+                    errors.push(msg);
+                    continue;
+                }
+            };
+
+            let resp = match resp.error_for_status() {
+                Ok(r) => r,
+                Err(e) => {
+                    let msg = format!("{url} 响应异常(尝试{}): {e}", attempt + 1);
+                    log_warn("quote", &msg);
+                    errors.push(msg);
+                    continue;
+                }
+            };
+
+            match resp.json::<serde_json::Value>().await {
+                Ok(v) => {
+                    if v.pointer("/data/diff").and_then(|d| d.as_array()).is_some() {
+                        return Ok(v);
+                    }
+                    let msg = format!("{url} 返回无 diff 数据(尝试{})", attempt + 1);
+                    log_warn("quote", &msg);
+                    errors.push(msg);
+                }
+                Err(e) => {
+                    let msg = format!("{url} 解析失败(尝试{}): {e}", attempt + 1);
+                    log_warn("quote", &msg);
+                    errors.push(msg);
+                }
             }
-
-            let price = parse_f64(item.get("f2").unwrap_or(&serde_json::Value::Null))
-                .filter(|v| *v > 0.0);
-            let change_pct = parse_f64(item.get("f3").unwrap_or(&serde_json::Value::Null));
-            let change_amt = parse_f64(item.get("f4").unwrap_or(&serde_json::Value::Null));
-            let volume = parse_f64(item.get("f5").unwrap_or(&serde_json::Value::Null));
-            let turnover = parse_f64(item.get("f6").unwrap_or(&serde_json::Value::Null));
-            let high = parse_f64(item.get("f15").unwrap_or(&serde_json::Value::Null));
-            let low = parse_f64(item.get("f16").unwrap_or(&serde_json::Value::Null));
-            let open = parse_f64(item.get("f17").unwrap_or(&serde_json::Value::Null));
-            let prev_close = parse_f64(item.get("f18").unwrap_or(&serde_json::Value::Null));
-
-            map.insert(
-                code,
-                StockQuote {
-                    price,
-                    change_pct,
-                    change_amt,
-                    open,
-                    high,
-                    low,
-                    prev_close,
-                    volume,
-                    turnover,
-                },
-            );
         }
     }
 
-    Ok(map)
+    Err(format!(
+        "行情请求全部失败: {}",
+        if errors.is_empty() {
+            "无可用节点".into()
+        } else {
+            errors.join("；")
+        }
+    ))
+}
+
+fn parse_quote_map(resp: &serde_json::Value) -> HashMap<String, StockQuote> {
+    let mut map = HashMap::new();
+    let Some(items) = resp.pointer("/data/diff").and_then(|v| v.as_array()) else {
+        return map;
+    };
+
+    for item in items {
+        let code = item
+            .get("f12")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if code.is_empty() {
+            continue;
+        }
+
+        let price = parse_f64(item.get("f2").unwrap_or(&serde_json::Value::Null))
+            .filter(|v| *v > 0.0);
+        let change_pct = parse_f64(item.get("f3").unwrap_or(&serde_json::Value::Null));
+        let change_amt = parse_f64(item.get("f4").unwrap_or(&serde_json::Value::Null));
+        let volume = parse_f64(item.get("f5").unwrap_or(&serde_json::Value::Null));
+        let turnover = parse_f64(item.get("f6").unwrap_or(&serde_json::Value::Null));
+        let high = parse_f64(item.get("f15").unwrap_or(&serde_json::Value::Null));
+        let low = parse_f64(item.get("f16").unwrap_or(&serde_json::Value::Null));
+        let open = parse_f64(item.get("f17").unwrap_or(&serde_json::Value::Null));
+        let prev_close = parse_f64(item.get("f18").unwrap_or(&serde_json::Value::Null));
+
+        map.insert(
+            code,
+            StockQuote {
+                price,
+                change_pct,
+                change_amt,
+                open,
+                high,
+                low,
+                prev_close,
+                volume,
+                turnover,
+            },
+        );
+    }
+
+    map
+}
+
+async fn fetch_hot_quote_map(
+    client: &reqwest::Client,
+    secids: &str,
+) -> Result<HashMap<String, (String, Option<f64>, Option<f64>)>, String> {
+    let mut errors = Vec::new();
+    for url in QUOTE_URLS {
+        for attempt in 0..HTTP_RETRY {
+            sleep_retry(attempt).await;
+            let result = apply_browser_headers(client.get(*url))
+                .query(&[
+                    ("fltt", "2"),
+                    ("invt", "2"),
+                    ("fields", "f2,f3,f12,f14"),
+                    ("secids", secids),
+                ])
+                .send()
+                .await;
+
+            let resp = match result {
+                Ok(r) => r,
+                Err(e) => {
+                    let msg = format!("{url} 热股行情失败(尝试{}): {e}", attempt + 1);
+                    log_warn("hot-quote", &msg);
+                    errors.push(msg);
+                    continue;
+                }
+            };
+
+            let resp = match resp.error_for_status() {
+                Ok(r) => r,
+                Err(e) => {
+                    let msg = format!("{url} 热股行情响应异常(尝试{}): {e}", attempt + 1);
+                    log_warn("hot-quote", &msg);
+                    errors.push(msg);
+                    continue;
+                }
+            };
+
+            let Ok(json) = resp.json::<serde_json::Value>().await else {
+                let msg = format!("{url} 热股行情解析失败(尝试{})", attempt + 1);
+                log_warn("hot-quote", &msg);
+                errors.push(msg);
+                continue;
+            };
+
+            let mut quote_map: HashMap<String, (String, Option<f64>, Option<f64>)> = HashMap::new();
+            if let Some(items) = json.pointer("/data/diff").and_then(|v| v.as_array()) {
+                for item in items {
+                    let code = item
+                        .get("f12")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let name = item
+                        .get("f14")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let price = parse_f64(item.get("f2").unwrap_or(&serde_json::Value::Null))
+                        .filter(|v| *v > 0.0);
+                    let change_pct = parse_f64(item.get("f3").unwrap_or(&serde_json::Value::Null));
+                    if !code.is_empty() {
+                        quote_map.insert(code, (name, price, change_pct));
+                    }
+                }
+            }
+
+            if !quote_map.is_empty() {
+                return Ok(quote_map);
+            }
+
+            let msg = format!("{url} 热股行情为空(尝试{})", attempt + 1);
+            log_warn("hot-quote", &msg);
+            errors.push(msg);
+        }
+    }
+
+    Err(format!(
+        "热股行情补全失败: {}",
+        if errors.is_empty() {
+            "无可用节点".into()
+        } else {
+            errors.join("；")
+        }
+    ))
 }
 
 /// 拉取日线 K 线（最近 N 根）。优先腾讯/新浪（更快更稳），东财作兜底。
@@ -416,103 +588,454 @@ fn parse_json_f64(v: &serde_json::Value) -> f64 {
     parse_f64(v).unwrap_or(0.0)
 }
 
-/// 拉取人气榜热门股票（含名称与行情）
-pub async fn fetch_hot_stocks(limit: usize) -> Result<Vec<Stock>, String> {
-    let client = client()?;
-    let body = serde_json::json!({
+/// 单源热榜条目（不含完整行情）
+#[derive(Clone, Debug)]
+struct HotRankItem {
+    market: String,
+    code: String,
+    name: Option<String>,
+    change_pct: Option<f64>,
+}
+
+fn ths_market_to_str(market: i64, code: &str) -> String {
+    // 同花顺：17=沪市，33=深市；其余按代码推断
+    match market {
+        17 => "SH".into(),
+        33 => "SZ".into(),
+        _ => infer_market(code).into(),
+    }
+}
+
+fn hot_em_payload(page_size: usize) -> serde_json::Value {
+    serde_json::json!({
         "appId": "appId01",
-        "globalId": "stockpredict",
+        "globalId": HOT_EM_GLOBAL_ID,
+        "marketType": "",
         "pageNo": 1,
-        "pageSize": limit,
+        "pageSize": page_size,
+    })
+}
+
+fn apply_hot_em_headers(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    builder
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Accept-Language", "zh-CN,zh;q=0.9")
+        .header("Content-Type", "application/json")
+        .header("Origin", "https://guba.eastmoney.com")
+        .header("Referer", "https://guba.eastmoney.com/rank/")
+}
+
+fn apply_hot_ths_headers(builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    builder
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Accept-Language", "zh-CN,zh;q=0.9")
+        .header("Referer", "https://eq.10jqka.com.cn/")
+}
+
+/// 东方财富-股吧人气榜
+async fn fetch_hot_rank_eastmoney(
+    client: &reqwest::Client,
+    limit: usize,
+) -> Result<Vec<HotRankItem>, String> {
+    let mut last_err = String::new();
+    for attempt in 0..HTTP_RETRY {
+        sleep_retry(attempt).await;
+        let result = apply_hot_em_headers(client.post(HOT_EM_URL))
+            .json(&hot_em_payload(limit))
+            .send()
+            .await;
+
+        let resp = match result {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("东财人气榜请求失败(尝试{}): {e}", attempt + 1);
+                log_warn("hot-em", &last_err);
+                continue;
+            }
+        };
+
+        let resp = match resp.error_for_status() {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("东财人气榜响应异常(尝试{}): {e}", attempt + 1);
+                log_warn("hot-em", &last_err);
+                continue;
+            }
+        };
+
+        let resp = match resp.json::<serde_json::Value>().await {
+            Ok(v) => v,
+            Err(e) => {
+                last_err = format!("东财人气榜解析失败(尝试{}): {e}", attempt + 1);
+                log_warn("hot-em", &last_err);
+                continue;
+            }
+        };
+
+        let items = resp
+            .pointer("/data")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            let sc = item.get("sc").and_then(|v| v.as_str()).unwrap_or_default();
+            if sc.is_empty() {
+                continue;
+            }
+            let (market, code) = parse_market_from_sc(sc);
+            out.push(HotRankItem {
+                market,
+                code,
+                name: None,
+                change_pct: None,
+            });
+        }
+        return Ok(out);
+    }
+
+    Err(if last_err.is_empty() {
+        "东财人气榜请求失败".into()
+    } else {
+        last_err
+    })
+}
+
+/// 东方财富-股吧飙升榜（排名快速上升，补充「正在升温」标的）
+async fn fetch_hot_rank_eastmoney_surge(
+    client: &reqwest::Client,
+    limit: usize,
+) -> Result<Vec<HotRankItem>, String> {
+    let mut last_err = String::new();
+    for attempt in 0..HTTP_RETRY {
+        sleep_retry(attempt).await;
+        let result = apply_hot_em_headers(client.post(HOT_EM_SURGE_URL))
+            .json(&hot_em_payload(limit))
+            .send()
+            .await;
+
+        let resp = match result {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("东财飙升榜请求失败(尝试{}): {e}", attempt + 1);
+                log_warn("hot-em-surge", &last_err);
+                continue;
+            }
+        };
+
+        let resp = match resp.error_for_status() {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("东财飙升榜响应异常(尝试{}): {e}", attempt + 1);
+                log_warn("hot-em-surge", &last_err);
+                continue;
+            }
+        };
+
+        let resp = match resp.json::<serde_json::Value>().await {
+            Ok(v) => v,
+            Err(e) => {
+                last_err = format!("东财飙升榜解析失败(尝试{}): {e}", attempt + 1);
+                log_warn("hot-em-surge", &last_err);
+                continue;
+            }
+        };
+
+        let items = resp
+            .pointer("/data")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut rows: Vec<(i64, HotRankItem)> = Vec::with_capacity(items.len());
+        for (idx, item) in items.into_iter().enumerate() {
+            let sc = item.get("sc").and_then(|v| v.as_str()).unwrap_or_default();
+            if sc.is_empty() {
+                continue;
+            }
+            let (market, code) = parse_market_from_sc(sc);
+            let rank = item
+                .get("hrcrk")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(idx as i64 + 1);
+            rows.push((
+                rank,
+                HotRankItem {
+                    market,
+                    code,
+                    name: None,
+                    change_pct: None,
+                },
+            ));
+        }
+        rows.sort_by_key(|(rank, _)| *rank);
+        return Ok(rows.into_iter().map(|(_, item)| item).take(limit).collect());
+    }
+
+    Err(if last_err.is_empty() {
+        "东财飙升榜请求失败".into()
+    } else {
+        last_err
+    })
+}
+
+/// 同花顺-A股小时热榜
+async fn fetch_hot_rank_tonghuashun(
+    client: &reqwest::Client,
+    limit: usize,
+) -> Result<Vec<HotRankItem>, String> {
+    let mut last_err = String::new();
+    for attempt in 0..HTTP_RETRY {
+        sleep_retry(attempt).await;
+        let result = apply_hot_ths_headers(client.get(HOT_THS_URL))
+            .query(&[
+                ("stock_type", "a"),
+                ("type", "hour"),
+                ("list_type", "normal"),
+            ])
+            .send()
+            .await;
+
+        let resp = match result {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("同花顺热榜请求失败(尝试{}): {e}", attempt + 1);
+                log_warn("hot-ths", &last_err);
+                continue;
+            }
+        };
+
+        let resp = match resp.error_for_status() {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("同花顺热榜响应异常(尝试{}): {e}", attempt + 1);
+                log_warn("hot-ths", &last_err);
+                continue;
+            }
+        };
+
+        let resp = match resp.json::<serde_json::Value>().await {
+            Ok(v) => v,
+            Err(e) => {
+                last_err = format!("同花顺热榜解析失败(尝试{}): {e}", attempt + 1);
+                log_warn("hot-ths", &last_err);
+                continue;
+            }
+        };
+
+        let status = resp
+            .get("status_code")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1);
+        if status != 0 {
+            last_err = format!("同花顺热榜业务失败: status_code={status}");
+            log_warn("hot-ths", &last_err);
+            continue;
+        }
+
+        let items = resp
+            .pointer("/data/stock_list")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut out = Vec::with_capacity(items.len().min(limit));
+        for item in items.into_iter().take(limit) {
+            let code = item
+                .get("code")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if code.is_empty() {
+                continue;
+            }
+            let mkt = item.get("market").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let market = ths_market_to_str(mkt, &code);
+            let name = item
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let change_pct = item
+                .get("rise_and_fall")
+                .and_then(parse_f64);
+            out.push(HotRankItem {
+                market,
+                code,
+                name,
+                change_pct,
+            });
+        }
+        return Ok(out);
+    }
+
+    Err(if last_err.is_empty() {
+        "同花顺热榜请求失败".into()
+    } else {
+        last_err
+    })
+}
+
+/// 多源 Reciprocal Rank Fusion：同时出现在多个榜单的股票优先
+fn merge_hot_ranks_rrf(
+    sources: &[(f64, Vec<HotRankItem>)],
+    limit: usize,
+) -> Vec<HotRankItem> {
+    let mut scores: HashMap<String, f64> = HashMap::new();
+    let mut meta: HashMap<String, HotRankItem> = HashMap::new();
+
+    for (weight, list) in sources {
+        if *weight <= 0.0 || list.is_empty() {
+            continue;
+        }
+        for (idx, item) in list.iter().enumerate() {
+            let key = format!("{}:{}", item.market, item.code);
+            let contrib = *weight / (HOT_RRF_K + idx as f64 + 1.0);
+            *scores.entry(key.clone()).or_insert(0.0) += contrib;
+            meta.entry(key)
+                .and_modify(|existing| {
+                    if existing.name.is_none() {
+                        existing.name = item.name.clone();
+                    }
+                    if existing.change_pct.is_none() {
+                        existing.change_pct = item.change_pct;
+                    }
+                })
+                .or_insert_with(|| item.clone());
+        }
+    }
+
+    let mut ranked: Vec<(String, f64)> = scores.into_iter().collect();
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
     });
 
-    let resp = client
-        .post(HOT_URL)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("热门股请求失败: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("热门股响应异常: {e}"))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("热门股解析失败: {e}"))?;
+    ranked
+        .into_iter()
+        .filter_map(|(key, _)| meta.remove(&key))
+        .take(limit)
+        .collect()
+}
 
-    let ranked: Vec<(String, String)> = resp
-        .pointer("/data")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| {
-                    let sc = item.get("sc")?.as_str()?;
-                    let (market, code) = parse_market_from_sc(sc);
-                    Some((market, code))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+/// 联网拉取多源人气榜并融合（东财人气 + 同花顺热榜 + 东财飙升），再补实时行情。
+/// 榜单成功但行情失败时仍返回列表（名称/涨跌幅尽量用同花顺兜底），保证页面可用。
+pub async fn fetch_hot_stocks(limit: usize) -> Result<Vec<Stock>, String> {
+    let limit = limit.max(1);
+    // 各源多取一些，融合后再截断，提高交叉命中质量
+    let per_source = (limit * 2).clamp(20, 100);
+    let client = client()?;
 
+    let (em_pop, ths, em_surge) = tokio::join!(
+        fetch_hot_rank_eastmoney(&client, per_source),
+        fetch_hot_rank_tonghuashun(&client, per_source),
+        fetch_hot_rank_eastmoney_surge(&client, per_source),
+    );
+
+    let mut sources: Vec<(f64, Vec<HotRankItem>)> = Vec::with_capacity(3);
+    let mut warnings = Vec::new();
+
+    match em_pop {
+        Ok(list) if !list.is_empty() => {
+            log_warn("hot", &format!("东财人气榜 OK: {} 条", list.len()));
+            sources.push((1.0, list));
+        }
+        Ok(_) => {
+            let msg = "东财人气榜为空".to_string();
+            log_warn("hot", &msg);
+            warnings.push(msg);
+        }
+        Err(e) => {
+            log_warn("hot", &e);
+            warnings.push(e);
+        }
+    }
+    match ths {
+        Ok(list) if !list.is_empty() => {
+            log_warn("hot", &format!("同花顺热榜 OK: {} 条", list.len()));
+            sources.push((1.0, list));
+        }
+        Ok(_) => {
+            let msg = "同花顺热榜为空".to_string();
+            log_warn("hot", &msg);
+            warnings.push(msg);
+        }
+        Err(e) => {
+            log_warn("hot", &e);
+            warnings.push(e);
+        }
+    }
+    // 飙升榜权重略低：反映「升温」而非绝对人气
+    match em_surge {
+        Ok(list) if !list.is_empty() => {
+            log_warn("hot", &format!("东财飙升榜 OK: {} 条", list.len()));
+            sources.push((0.55, list));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            log_warn("hot", &e);
+            warnings.push(e);
+        }
+    }
+
+    let ranked = merge_hot_ranks_rrf(&sources, limit);
     if ranked.is_empty() {
-        return Ok(vec![]);
+        let err = format!(
+            "人气榜联网采集失败: {}",
+            if warnings.is_empty() {
+                "无可用数据源".into()
+            } else {
+                warnings.join("；")
+            }
+        );
+        log_warn("hot", &err);
+        return Err(err);
+    }
+
+    if !warnings.is_empty() {
+        log_warn(
+            "hot",
+            &format!(
+                "部分数据源失败，已用 {} 个源融合出 {} 条: {}",
+                sources.len(),
+                ranked.len(),
+                warnings.join("；")
+            ),
+        );
     }
 
     let secids: Vec<String> = ranked
         .iter()
-        .map(|(market, code)| to_secid(market, code))
+        .map(|item| to_secid(&item.market, &item.code))
         .collect();
 
-    let quote_resp = client
-        .get(QUOTE_URL)
-        .query(&[
-            ("fltt", "2"),
-            ("invt", "2"),
-            ("fields", "f2,f3,f12,f14"),
-            ("secids", &secids.join(",")),
-        ])
-        .send()
-        .await
-        .map_err(|e| format!("热门股行情请求失败: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("热门股行情响应异常: {e}"))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("热门股行情解析失败: {e}"))?;
-
-    let mut quote_map: HashMap<String, (String, Option<f64>, Option<f64>)> = HashMap::new();
-    if let Some(items) = quote_resp
-        .pointer("/data/diff")
-        .and_then(|v| v.as_array())
-    {
-        for item in items {
-            let code = item
-                .get("f12")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let name = item
-                .get("f14")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let price = parse_f64(item.get("f2").unwrap_or(&serde_json::Value::Null));
-            let change_pct = parse_f64(item.get("f3").unwrap_or(&serde_json::Value::Null));
-            if !code.is_empty() {
-                quote_map.insert(code, (name, price, change_pct));
-            }
+    let quote_map = match fetch_hot_quote_map(&client, &secids.join(",")).await {
+        Ok(map) => map,
+        Err(e) => {
+            log_warn("hot", &e);
+            HashMap::new()
         }
-    }
+    };
 
     let mut stocks = Vec::with_capacity(ranked.len());
-    for (market, code) in ranked {
-        let (name, price, change_pct) = quote_map
-            .get(&code)
-            .cloned()
-            .unwrap_or_else(|| (code.clone(), None, None));
+    for item in ranked {
+        let hint_name = item.name.clone().unwrap_or_else(|| item.code.clone());
+        let hint_pct = item.change_pct;
+        let (name, price, change_pct) = if let Some((n, p, c)) = quote_map.get(&item.code).cloned()
+        {
+            let name = if n.is_empty() { hint_name } else { n };
+            let change_pct = c.or(hint_pct);
+            (name, p, change_pct)
+        } else {
+            (hint_name, None, hint_pct)
+        };
 
         stocks.push(Stock {
-            code,
+            code: item.code,
             name,
-            market,
+            market: item.market,
             sector: "人气榜".to_string(),
             price,
             change_pct,
@@ -523,7 +1046,7 @@ pub async fn fetch_hot_stocks(limit: usize) -> Result<Vec<Stock>, String> {
     Ok(stocks)
 }
 
-/// 东方财富人气榜 Top N 股票代码
+/// 多源人气榜 Top N 股票代码
 pub async fn fetch_hot_stock_codes(limit: usize) -> Result<Vec<String>, String> {
     let hot = fetch_hot_stocks(limit).await?;
     Ok(hot.into_iter().map(|s| s.code).collect())
@@ -661,5 +1184,49 @@ mod tests {
         assert_eq!(infer_market("159915"), "SZ");
         assert_eq!(infer_market("600519"), "SH");
         assert_eq!(infer_market("000858"), "SZ");
+    }
+
+    #[test]
+    fn ths_market_mapping() {
+        assert_eq!(ths_market_to_str(17, "600519"), "SH");
+        assert_eq!(ths_market_to_str(33, "000858"), "SZ");
+        assert_eq!(ths_market_to_str(99, "600000"), "SH");
+    }
+
+    #[test]
+    fn rrf_prefers_multi_source_hits() {
+        let em = vec![
+            HotRankItem {
+                market: "SZ".into(),
+                code: "001309".into(),
+                name: None,
+                change_pct: None,
+            },
+            HotRankItem {
+                market: "SH".into(),
+                code: "601991".into(),
+                name: None,
+                change_pct: None,
+            },
+        ];
+        let ths = vec![
+            HotRankItem {
+                market: "SH".into(),
+                code: "601991".into(),
+                name: Some("大唐发电".into()),
+                change_pct: Some(1.2),
+            },
+            HotRankItem {
+                market: "SZ".into(),
+                code: "002384".into(),
+                name: None,
+                change_pct: None,
+            },
+        ];
+        let merged = merge_hot_ranks_rrf(&[(1.0, em), (1.0, ths)], 3);
+        assert_eq!(merged[0].code, "601991");
+        assert_eq!(merged[0].name.as_deref(), Some("大唐发电"));
+        assert!(merged.iter().any(|s| s.code == "001309"));
+        assert!(merged.iter().any(|s| s.code == "002384"));
     }
 }

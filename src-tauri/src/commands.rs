@@ -1,6 +1,8 @@
 use crate::models::{
-    AlgorithmInfo, AnalysisResult, BacktestResult, DailyBar, PredictionResult, Stock, StocksPayload,
+    AlgorithmInfo, AnalysisResult, BacktestResult, DailyBar, PredictionResult, ScreenResult, Stock,
+    StocksPayload,
 };
+use crate::screener::{self, ScreenRequest};
 use crate::strategy::{self, StrategyCompose, StrategySourceInfo};
 use crate::{backtest, market, predictor};
 use std::collections::HashSet;
@@ -14,10 +16,36 @@ pub async fn load_stocks(app: AppHandle) -> Result<StocksPayload, String> {
     let mut stocks: Vec<Stock> =
         serde_json::from_str(&text).map_err(|e| format!("解析股票列表失败: {e}"))?;
 
-    let hot_stocks = market::fetch_hot_stocks(12).await.unwrap_or_default();
+    let mut warnings: Vec<String> = Vec::new();
+    let hot_stocks = match market::fetch_hot_stocks(12).await {
+        Ok(list) => {
+            if list.is_empty() {
+                let msg = "人气榜返回空列表，请检查网络后刷新".to_string();
+                eprintln!("[stock-predict:load_stocks] {msg}");
+                warnings.push(msg);
+            } else if list.iter().all(|s| s.price.is_none()) {
+                let msg = "人气榜行情补全失败，已展示榜单基础信息".to_string();
+                eprintln!("[stock-predict:load_stocks] {msg}");
+                warnings.push(msg);
+            }
+            list
+        }
+        Err(e) => {
+            eprintln!("[stock-predict:load_stocks] 人气榜失败: {e}");
+            warnings.push(format!("人气榜: {e}"));
+            vec![]
+        }
+    };
     let hot_codes: HashSet<String> = hot_stocks.iter().map(|s| s.code.clone()).collect();
 
-    let quotes = market::fetch_stock_quotes(&stocks).await.unwrap_or_default();
+    let quotes = match market::fetch_stock_quotes(&stocks).await {
+        Ok(q) => q,
+        Err(e) => {
+            eprintln!("[stock-predict:load_stocks] 种子行情失败: {e}");
+            warnings.push("行情补全失败，部分价格可能缺失".into());
+            Default::default()
+        }
+    };
     for stock in &mut stocks {
         stock.is_hot = hot_codes.contains(&stock.code);
         if let Some(quote) = quotes.get(&stock.code) {
@@ -31,7 +59,17 @@ pub async fn load_stocks(app: AppHandle) -> Result<StocksPayload, String> {
             .then_with(|| a.code.cmp(&b.code))
     });
 
-    Ok(StocksPayload { stocks, hot_stocks })
+    let warning = if warnings.is_empty() {
+        None
+    } else {
+        Some(warnings.join("；"))
+    };
+
+    Ok(StocksPayload {
+        stocks,
+        hot_stocks,
+        warning,
+    })
 }
 
 fn read_stocks_json(app: &AppHandle) -> Result<String, String> {
@@ -207,4 +245,21 @@ pub fn get_tushare_token_status() -> TushareTokenStatus {
 pub fn set_tushare_token(token: String) -> Result<TushareTokenStatus, String> {
     crate::capital_flow::save_tushare_token(&token)?;
     Ok(get_tushare_token_status())
+}
+
+#[tauri::command]
+pub fn default_screen_compose() -> StrategyCompose {
+    screener::default_screen_compose()
+}
+
+/// 智能选股：建池 → 硬过滤 → 批量技术打分 → TopN
+#[tauri::command]
+pub async fn run_smart_screen(
+    app: AppHandle,
+    request: ScreenRequest,
+) -> Result<ScreenResult, String> {
+    let text = read_stocks_json(&app)?;
+    let seed: Vec<Stock> =
+        serde_json::from_str(&text).map_err(|e| format!("解析股票列表失败: {e}"))?;
+    screener::run_smart_screen(&app, seed, request).await
 }
