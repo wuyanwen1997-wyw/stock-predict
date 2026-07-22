@@ -49,4 +49,5 @@ let quotes = fetch_stock_quotes(stocks).await?;
 - 分钟线 `DailyBar.date` 带时分，日线只有日期。
 - 新浪无可靠周/月，不要强行加 sina week/month。
 - Android/桌面 UA 已在 `client.rs` 区分，勿删 Referer。
-- 勿把 `calc_volatility` 当行情 API 扩展点；因子计算归 `factor_model`。
+- 勿把 `calc_volatility` 当行情 API 扩展点；统计原语在 `algo::stats`（见 `.cursor/skills/algo`）。
+- 行情模块只负责取数与 DTO；打分/融合属 `algo`。

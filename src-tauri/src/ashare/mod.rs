@@ -16,7 +16,10 @@ mod search;
 mod symbol;
 
 pub use hot::{fetch_hot_stock_codes, fetch_hot_stocks};
-pub use kline::{calc_volatility, fetch_daily_klines, fetch_intraday_trends, fetch_klines};
+pub use kline::{fetch_daily_klines, fetch_intraday_trends, fetch_klines};
 pub use quotes::{apply_quote, fetch_stock_quotes};
 pub use search::search_stocks;
 pub use symbol::{infer_market, to_secid, to_sina_symbol, to_tencent_symbol};
+
+/// 兼容：波动率已迁至 [`crate::algo::stats`]
+pub use crate::algo::stats::calc_volatility;

@@ -68,5 +68,5 @@ infer_market("510980");          // "SH"
 
 ## 注意
 
-- `calc_volatility` 目前从 `ashare` 导出，属因子侧工具；新代码优先在 `factor_model` 使用，避免行情模块继续堆领域计算。
+- `calc_volatility` 已迁至 `algo::stats`；`ashare` / `market` 仅兼容 re-export。
 - 勿在 `src/` 直连第三方 URL；勿把东财原始 JSON 泄漏到领域层。

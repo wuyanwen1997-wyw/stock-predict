@@ -414,7 +414,7 @@ fn resolve_direction(up: f64, down: f64) -> String {
 
 fn market_vol(bars: &[DailyBar], lookback: usize) -> f64 {
     let window = factor_model::take_lookback(bars, lookback);
-    crate::market::calc_volatility(window)
+    crate::algo::stats::calc_volatility(window)
 }
 
 fn build_scenario(
