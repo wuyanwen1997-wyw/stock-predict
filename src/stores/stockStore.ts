@@ -1,10 +1,12 @@
 import { create } from "zustand";
 import {
   analyzeStock,
+  defaultScreenCompose,
   defaultStrategyCompose,
   listAlgorithms,
   listStrategySources,
   loadStocks,
+  runSmartScreen,
   searchStocks,
 } from "@/services/api";
 import type {
@@ -12,6 +14,11 @@ import type {
   BacktestResult,
   DailyBar,
   PredictionResult,
+  ScreenFilters,
+  ScreenHit,
+  ScreenProgressEvent,
+  ScreenResult,
+  ScreenUniverse,
   Stock,
   StrategyCompose,
   StrategySourceInfo,
@@ -20,8 +27,36 @@ import type {
 const STRATEGY_MAP_KEY = "strategy_compose_by_stock_v1";
 const PREDICT_MODE_KEY = "predict_mode_v1";
 const PREDICT_HORIZON_KEY = "predict_horizon_days_v1";
+const SCREEN_COMPOSE_KEY = "screen_compose_v1";
 
 export type PredictMode = "daily" | "trend";
+
+const DEFAULT_SCREEN_FILTERS: ScreenFilters = {
+  exclude_st: true,
+  min_price: 2,
+  min_change_pct: -5,
+  max_change_pct: 7,
+  main_board_only: false,
+};
+
+function loadScreenCompose(): StrategyCompose | null {
+  try {
+    const raw = localStorage.getItem(SCREEN_COMPOSE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    return isValidCompose(parsed) ? cloneCompose(parsed) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveScreenCompose(compose: StrategyCompose) {
+  try {
+    localStorage.setItem(SCREEN_COMPOSE_KEY, JSON.stringify(compose));
+  } catch {
+    /* ignore */
+  }
+}
 
 const TREND_HORIZONS = [2, 3, 4, 5] as const;
 
@@ -215,7 +250,7 @@ interface StockState {
   toggleSource: (sourceId: string) => void;
   setSourceWeight: (sourceId: string, weight: number) => void;
   resetComposeForStock: () => void;
-  /** 应用按标的调优的推荐组合（宽基：多因子70+消息30） */
+  /** 应用按标的调优的推荐组合（宽基：多因子70+消息30，以整体准确率为准） */
   applyTunedComposeForStock: () => void;
   runPrediction: () => Promise<void>;
   loadStockAnalysis: () => Promise<void>;
@@ -223,6 +258,28 @@ interface StockState {
   setSearchQuery: (query: string) => void;
   runSearch: () => Promise<void>;
   clearSearch: () => void;
+
+  /** 智能选股 */
+  screenUniverse: ScreenUniverse;
+  screenFilters: ScreenFilters;
+  screenCompose: StrategyCompose | null;
+  screenHorizonDays: number;
+  screenTopN: number;
+  screenResult: ScreenResult | null;
+  screening: boolean;
+  screenProgress: { done: number; total: number; code: string };
+  setScreenUniverse: (u: ScreenUniverse) => void;
+  setScreenFilters: (patch: Partial<ScreenFilters>) => void;
+  setScreenHorizonDays: (days: number) => void;
+  setScreenTopN: (n: number) => void;
+  updateScreenCompose: (
+    patch: Partial<StrategyCompose> | ((c: StrategyCompose) => StrategyCompose),
+  ) => void;
+  toggleScreenSource: (sourceId: string) => void;
+  setScreenSourceWeight: (sourceId: string, weight: number) => void;
+  resetScreenCompose: () => Promise<void>;
+  runSmartScreen: () => Promise<void>;
+  applyScreenHit: (hit: ScreenHit) => void;
 }
 
 export const useStockStore = create<StockState>((set, get) => ({
@@ -251,6 +308,15 @@ export const useStockStore = create<StockState>((set, get) => ({
   error: "",
   analysisSeq: 0,
 
+  screenUniverse: "mixed",
+  screenFilters: { ...DEFAULT_SCREEN_FILTERS },
+  screenCompose: loadScreenCompose(),
+  screenHorizonDays: 1,
+  screenTopN: 20,
+  screenResult: null,
+  screening: false,
+  screenProgress: { done: 0, total: 0, code: "" },
+
   init: async () => {
     set({ loading: true, error: "" });
     try {
@@ -259,17 +325,21 @@ export const useStockStore = create<StockState>((set, get) => ({
         listAlgorithms(),
         listStrategySources(),
         defaultStrategyCompose(),
+        defaultScreenCompose(),
       ]);
 
       const stocksPayload =
         settled[0].status === "fulfilled" ? settled[0].value : { stocks: [], hot_stocks: [] };
       const stocks = stocksPayload.stocks;
       const hotStocksFromApi = stocksPayload.hot_stocks ?? [];
+      const hotWarning = stocksPayload.warning?.trim() || "";
       const algorithms = settled[1].status === "fulfilled" ? settled[1].value : [];
       const strategySources = settled[2].status === "fulfilled" ? settled[2].value : [];
       const defaultCompose = settled[3].status === "fulfilled" ? settled[3].value : null;
+      const screenDefault =
+        settled[4].status === "fulfilled" ? settled[4].value : null;
 
-      const labels = ["股票列表", "算法列表", "信号源", "默认组合"] as const;
+      const labels = ["股票列表", "算法列表", "信号源", "默认组合", "选股组合"] as const;
       const failures = settled
         .map((r, i) =>
           r.status === "rejected" ? `${labels[i]}: ${String(r.reason)}` : null,
@@ -280,7 +350,14 @@ export const useStockStore = create<StockState>((set, get) => ({
         throw new Error(failures[0] ?? "股票列表为空");
       }
 
-      const softErrors = failures.filter((f) => !f.startsWith("股票列表"));
+      const softErrors = [
+        ...failures.filter((f) => !f.startsWith("股票列表")),
+        ...(hotWarning ? [hotWarning] : []),
+      ];
+
+      if (hotWarning) {
+        console.warn("[stock-predict] hot list warning:", hotWarning);
+      }
 
       let watchlist = loadWatchlist([...stocks, ...hotStocksFromApi]);
       watchlist = await recoverLegacyWatchlist(watchlist);
@@ -295,6 +372,14 @@ export const useStockStore = create<StockState>((set, get) => ({
         if (saved?.lookback_days) lookbackDays = saved.lookback_days;
       }
 
+      const existingScreen = get().screenCompose;
+      const screenCompose = existingScreen
+        ? mergeWithDefault(existingScreen, screenDefault, 50)
+        : screenDefault
+          ? cloneCompose(screenDefault)
+          : null;
+      if (screenCompose) saveScreenCompose(screenCompose);
+
       set({
         stocks,
         hotStocks: hotStocksFromApi.length > 0 ? hotStocksFromApi : stocks.filter((s) => s.is_hot),
@@ -305,6 +390,7 @@ export const useStockStore = create<StockState>((set, get) => ({
         selectedStock,
         watchlist,
         lookbackDays,
+        screenCompose,
         loading: false,
         error: softErrors.length > 0 ? softErrors.join("；") : "",
       });
@@ -581,6 +667,112 @@ export const useStockStore = create<StockState>((set, get) => ({
       searchTimer = null;
     }
     set({ searchQuery: "", searchResults: [], searching: false });
+  },
+
+  setScreenUniverse: (u) => set({ screenUniverse: u }),
+
+  setScreenFilters: (patch) =>
+    set({ screenFilters: { ...get().screenFilters, ...patch } }),
+
+  setScreenHorizonDays: (days) =>
+    set({ screenHorizonDays: Math.min(5, Math.max(1, Math.round(days))) }),
+
+  setScreenTopN: (n) => set({ screenTopN: Math.min(50, Math.max(5, Math.round(n))) }),
+
+  updateScreenCompose: (patch) => {
+    const current = get().screenCompose;
+    if (!current) return;
+    const next =
+      typeof patch === "function"
+        ? patch(current)
+        : { ...current, ...patch, sources: patch.sources ?? current.sources };
+    saveScreenCompose(next);
+    set({ screenCompose: next });
+  },
+
+  toggleScreenSource: (sourceId) => {
+    get().updateScreenCompose((c) => ({
+      ...c,
+      sources: c.sources.map((s) =>
+        s.id === sourceId ? { ...s, enabled: !s.enabled } : s,
+      ),
+    }));
+  },
+
+  setScreenSourceWeight: (sourceId, weight) => {
+    get().updateScreenCompose((c) => ({
+      ...c,
+      sources: c.sources.map((s) =>
+        s.id === sourceId ? { ...s, weight: Math.max(0, Math.min(100, weight)) } : s,
+      ),
+    }));
+  },
+
+  resetScreenCompose: async () => {
+    try {
+      const def = await defaultScreenCompose();
+      saveScreenCompose(def);
+      set({ screenCompose: def });
+    } catch (e) {
+      set({ error: `重置选股组合失败: ${String(e)}` });
+    }
+  },
+
+  runSmartScreen: async () => {
+    if (get().screening) return;
+    set({
+      screening: true,
+      screenResult: null,
+      screenProgress: { done: 0, total: 0, code: "" },
+      error: "",
+    });
+
+    let unlisten: (() => void) | undefined;
+    try {
+      const { listen } = await import("@tauri-apps/api/event");
+      unlisten = await listen<ScreenProgressEvent>("smart-screen-progress", (event) => {
+        set({
+          screenProgress: {
+            done: event.payload.done,
+            total: event.payload.total,
+            code: event.payload.code,
+          },
+        });
+      });
+    } catch {
+      /* 非 Tauri 环境忽略 */
+    }
+
+    try {
+      const {
+        screenUniverse,
+        screenFilters,
+        screenCompose,
+        screenHorizonDays,
+        screenTopN,
+        watchlist,
+      } = get();
+      const compose = screenCompose ?? (await defaultScreenCompose());
+      const result = await runSmartScreen({
+        universe: screenUniverse,
+        watchlist,
+        filters: screenFilters,
+        compose,
+        horizon_days: screenHorizonDays,
+        lookback_days: compose.lookback_days || 50,
+        top_n: screenTopN,
+        concurrency: 4,
+      });
+      set({ screenResult: result, screening: false });
+    } catch (err) {
+      set({ error: String(err), screening: false });
+    } finally {
+      unlisten?.();
+    }
+  },
+
+  applyScreenHit: (hit) => {
+    get().selectStock(hit.stock);
   },
 }));
 

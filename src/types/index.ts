@@ -11,6 +11,8 @@ export interface Stock {
 export interface StocksPayload {
   stocks: Stock[];
   hot_stocks: Stock[];
+  /** 人气榜或部分行情失败时的可读告警 */
+  warning?: string;
 }
 
 export interface AnalysisResult {
@@ -146,4 +148,53 @@ export interface AlgorithmInfo {
   name: string;
   description: string;
   enabled: boolean;
+}
+
+export type ScreenUniverse = "hot" | "watchlist" | "seed" | "mixed";
+
+export interface ScreenFilters {
+  exclude_st: boolean;
+  min_price?: number | null;
+  min_change_pct?: number | null;
+  max_change_pct?: number | null;
+  main_board_only: boolean;
+}
+
+export interface ScreenRequest {
+  universe: ScreenUniverse;
+  watchlist: Stock[];
+  filters: ScreenFilters;
+  compose?: StrategyCompose;
+  horizon_days: number;
+  lookback_days: number;
+  top_n: number;
+  concurrency: number;
+}
+
+export interface ScreenHit {
+  stock: Stock;
+  up_probability: number;
+  down_probability: number;
+  confidence: number;
+  direction: string;
+  factor_score: number;
+  hints: string[];
+  error?: string;
+}
+
+export interface ScreenProgressEvent {
+  done: number;
+  total: number;
+  code: string;
+}
+
+export interface ScreenResult {
+  hits: ScreenHit[];
+  universe_size: number;
+  filtered_size: number;
+  scored_size: number;
+  failed_size: number;
+  elapsed_ms: number;
+  summary: string;
+  timed_out?: boolean;
 }

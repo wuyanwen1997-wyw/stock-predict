@@ -5,6 +5,8 @@ import type {
   BacktestResult,
   DailyBar,
   PredictionResult,
+  ScreenRequest,
+  ScreenResult,
   Stock,
   StocksPayload,
   StrategyCompose,
@@ -85,6 +87,14 @@ export async function defaultStrategyCompose() {
 
 export async function defaultStrategyComposeForStock(stock: Stock) {
   return invoke<StrategyCompose>("default_strategy_compose_for_stock", { stock });
+}
+
+export async function defaultScreenCompose() {
+  return invoke<StrategyCompose>("default_screen_compose");
+}
+
+export async function runSmartScreen(request: ScreenRequest) {
+  return invoke<ScreenResult>("run_smart_screen", { request });
 }
 
 export type TushareTokenStatus = {

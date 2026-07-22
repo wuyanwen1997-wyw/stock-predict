@@ -144,11 +144,13 @@ export function HomePage() {
           </div>
         )}
 
-        {error && stocks.length === 0 && (
+        {error && (
           <p className="text-[11px] text-rose-300">{error}</p>
         )}
-        {!searchQuery.trim() && board === "热门" && hotStocks.length === 0 && stocks.length > 0 && (
-          <p className="text-[11px] text-slate-500">人气榜暂无数据，可切换板块或搜索</p>
+        {!searchQuery.trim() && board === "热门" && hotStocks.length === 0 && (
+          <p className="text-[11px] text-slate-500">
+            {error ? "人气榜暂不可用，可切换板块或搜索" : "人气榜暂无数据，可切换板块或搜索"}
+          </p>
         )}
       </div>
 

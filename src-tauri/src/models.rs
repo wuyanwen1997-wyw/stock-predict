@@ -101,6 +101,9 @@ fn default_horizon_days() -> u32 {
 pub struct StocksPayload {
     pub stocks: Vec<Stock>,
     pub hot_stocks: Vec<Stock>,
+    /// 人气榜或部分行情失败时的可读告警（列表仍可能部分可用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,4 +179,95 @@ pub struct AlgorithmInfo {
     pub name: String,
     pub description: String,
     pub enabled: bool,
+}
+
+/// 智能选股：股票池来源
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenUniverse {
+    Hot,
+    Watchlist,
+    Seed,
+    Mixed,
+}
+
+impl Default for ScreenUniverse {
+    fn default() -> Self {
+        Self::Mixed
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScreenFilters {
+    #[serde(default = "default_true")]
+    pub exclude_st: bool,
+    #[serde(default = "default_min_price")]
+    pub min_price: Option<f64>,
+    #[serde(default = "default_min_change")]
+    pub min_change_pct: Option<f64>,
+    #[serde(default = "default_max_change")]
+    pub max_change_pct: Option<f64>,
+    #[serde(default)]
+    pub main_board_only: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_min_price() -> Option<f64> {
+    Some(2.0)
+}
+
+fn default_min_change() -> Option<f64> {
+    Some(-5.0)
+}
+
+fn default_max_change() -> Option<f64> {
+    Some(7.0)
+}
+
+impl Default for ScreenFilters {
+    fn default() -> Self {
+        Self {
+            exclude_st: true,
+            min_price: default_min_price(),
+            min_change_pct: default_min_change(),
+            max_change_pct: default_max_change(),
+            main_board_only: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScreenHit {
+    pub stock: Stock,
+    pub up_probability: f64,
+    pub down_probability: f64,
+    pub confidence: f64,
+    pub direction: String,
+    pub factor_score: f64,
+    pub hints: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScreenProgressEvent {
+    pub done: usize,
+    pub total: usize,
+    pub code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScreenResult {
+    pub hits: Vec<ScreenHit>,
+    pub universe_size: usize,
+    pub filtered_size: usize,
+    pub scored_size: usize,
+    pub failed_size: usize,
+    pub elapsed_ms: u64,
+    pub summary: String,
+    #[serde(default)]
+    pub timed_out: bool,
 }

@@ -190,7 +190,7 @@ export function StockSelector({
           <div>
             <h2 className="text-sm font-medium text-slate-300">{sectionTitle}</h2>
             {!searchQuery.trim() && hotStocks.length > 0 && !showAll && (
-              <p className="mt-0.5 text-xs text-slate-500">东方财富人气榜 · 实时行情</p>
+              <p className="mt-0.5 text-xs text-slate-500">东财·同花顺多源人气榜 · 实时行情</p>
             )}
           </div>
           <div className="flex items-center gap-2">

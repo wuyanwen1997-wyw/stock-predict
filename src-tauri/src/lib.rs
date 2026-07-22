@@ -7,6 +7,7 @@ pub mod market;
 pub mod message_sentiment;
 pub mod models;
 pub mod predictor;
+pub mod screener;
 pub mod strategy;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -25,6 +26,8 @@ pub fn run() {
             commands::default_strategy_compose_for_stock,
             commands::get_tushare_token_status,
             commands::set_tushare_token,
+            commands::run_smart_screen,
+            commands::default_screen_compose,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

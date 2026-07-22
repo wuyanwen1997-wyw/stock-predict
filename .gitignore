@@ -12,6 +12,9 @@ Thumbs.db
 .env.local
 src-tauri/gen/
 
+# Android release signing (never commit)
+signing/
+
 # secrets / local capital-flow cache
 **/tushare_token.txt
 src-tauri/resources/market_fund_flow.json

@@ -244,7 +244,7 @@ export function StrategyComposer({
             type="button"
             onClick={() => applyTunedComposeForStock()}
             disabled={predicting}
-            title="宽基推荐：技术多因子 70% + 消息面 30%"
+            title="宽基推荐：技术多因子 70% + 消息面 30%（按整体准确率最优）"
             className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[10px] text-cyan-200 transition hover:bg-cyan-500/20 disabled:opacity-50 sm:text-xs"
           >
             调优组合
