@@ -27,7 +27,7 @@ description: >-
 1. 按能力改文件：`quotes` / `kline` / `search` / `hot` / `symbol` / `client`。
 2. 对外签名优先保持稳定；破坏性变更同步 `docs/ashare/api.md` 与前端 `src/services/api.ts`、`src/types`。
 3. K 线周期用 `models::KlinePeriod`，不要散落魔法字符串；IPC 用 `period` 字符串（`day`/`week`/`month`/`min5`…）。
-4. 日/分钟：腾讯 → 新浪 → 东财；周/月：腾讯 → 东财。
+4. 日/分钟：腾讯 → 新浪 → 东财；周/月：腾讯 → 东财；报价：腾讯 → 新浪 → 东财。
 5. 新数据源：URL + 解析放子模块内部；公开 API 仍返回项目 DTO。
 6. `hot` 与 `kline` 解耦；榜单融合失败策略保持「部分源成功仍可用」。
 7. 单测：`cargo test --manifest-path src-tauri/Cargo.toml ashare::`

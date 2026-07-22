@@ -1,8 +1,8 @@
 //! 多源人气/热股榜。
 
 use crate::ashare::client::{client, log_warn, parse_f64, sleep_retry, HTTP_RETRY};
-use crate::ashare::quotes::fetch_hot_quote_map;
-use crate::ashare::symbol::{infer_market, parse_market_from_sc, to_secid};
+use crate::ashare::quotes::fetch_stock_quotes;
+use crate::ashare::symbol::{infer_market, parse_market_from_sc};
 use crate::models::Stock;
 use std::collections::HashMap;
 
@@ -417,16 +417,27 @@ pub async fn fetch_hot_stocks(limit: usize) -> Result<Vec<Stock>, String> {
         );
     }
 
-    let secids: Vec<String> = ranked
+    let seed: Vec<Stock> = ranked
         .iter()
-        .map(|item| to_secid(&item.market, &item.code))
+        .map(|item| Stock {
+            code: item.code.clone(),
+            name: item
+                .name
+                .clone()
+                .unwrap_or_else(|| item.code.clone()),
+            market: item.market.clone(),
+            sector: "人气榜".to_string(),
+            price: None,
+            change_pct: item.change_pct,
+            is_hot: true,
+        })
         .collect();
 
-    let quote_map = match fetch_hot_quote_map(&http, &secids.join(",")).await {
+    let quote_map = match fetch_stock_quotes(&seed).await {
         Ok(map) => map,
         Err(e) => {
             log_warn("hot", &e);
-            HashMap::new()
+            Default::default()
         }
     };
 
@@ -434,18 +445,15 @@ pub async fn fetch_hot_stocks(limit: usize) -> Result<Vec<Stock>, String> {
     for item in ranked {
         let hint_name = item.name.clone().unwrap_or_else(|| item.code.clone());
         let hint_pct = item.change_pct;
-        let (name, price, change_pct) = if let Some((n, p, c)) = quote_map.get(&item.code).cloned()
-        {
-            let name = if n.is_empty() { hint_name } else { n };
-            let change_pct = c.or(hint_pct);
-            (name, p, change_pct)
+        let (price, change_pct) = if let Some(q) = quote_map.get(&item.code) {
+            (q.price, q.change_pct.or(hint_pct))
         } else {
-            (hint_name, None, hint_pct)
+            (None, hint_pct)
         };
 
         stocks.push(Stock {
             code: item.code,
-            name,
+            name: hint_name,
             market: item.market,
             sector: "人气榜".to_string(),
             price,
