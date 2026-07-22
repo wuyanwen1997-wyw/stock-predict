@@ -83,6 +83,10 @@ jobs:
         env:
           NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
 
+      # gen/android 默认是 Tauri 占位图标；仓库自定义图标在 icons/android
+      - name: Sync Android launcher icons
+        run: python scripts/sync-android-icons.py
+
       - name: Cache Gradle
         uses: actions/cache@v4
         with:

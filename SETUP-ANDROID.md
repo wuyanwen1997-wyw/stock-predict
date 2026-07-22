@@ -114,12 +114,15 @@ CI 每次会 `tauri android init`（`gen/android` 在 `.gitignore`），再 `tau
 | `signing/credentials.env` | 密码与 base64 备份（仅本机） |
 | `signing/keystore.properties` | 供 Gradle 读取 |
 
-`android init` 之后若要本地打签名包：
+`android init` 之后同步图标与签名：
 
 ```powershell
+npm run android:icons     # 把 icons/android 拷到 gen/android（CI 也会做）
 npm run android:signing   # 同步到 gen/android 并 patch Gradle
 npm run android:build
 ```
+
+**图标说明：** Android 桌面图标必须落在 `src-tauri/gen/android/app/src/main/res/`。仓库里的 `src-tauri/icons/android/` 是源文件；`gen/` 被 gitignore，故 `android init` 后要跑 `android:icons`，否则会是默认 Tauri 图标。
 
 ## 7. 改版本号
 

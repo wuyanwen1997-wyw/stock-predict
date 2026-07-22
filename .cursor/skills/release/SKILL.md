@@ -12,6 +12,7 @@ description: >-
 ## 必读
 
 - 版本脚本：`scripts/bump-version.py`
+- Android 图标同步：`scripts/sync-android-icons.py`（`npm run android:icons`）
 - Android CI：`.github/workflows/android-apk.yml`
 - 签名本地备份：`signing/`（**gitignore，勿提交**）
 - 说明：`SETUP-ANDROID.md`（GitHub Actions / Secrets）
@@ -73,6 +74,8 @@ npm run version:bump -- --auto --tag --push
 ```
 
 推送 `v*` tag → **Android APK** workflow → Artifacts + GitHub Release。
+
+CI 在 `android init` 后会跑 `sync-android-icons.py`，把 `src-tauri/icons/android/` 拷进 `gen/.../res/`；否则 APK 是默认占位图标。本地同样：`npm run android:init && npm run android:icons`。
 
 仅重跑 CI、不改版本：Actions 手动 Run，或重建 tag（慎用）。
 
