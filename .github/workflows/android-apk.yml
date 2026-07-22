@@ -36,7 +36,8 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          # 真机主流架构；仅打 arm64，缩短 CI 并得到可直接安装的 APK
+          targets: aarch64-linux-android
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -141,8 +142,8 @@ jobs:
           path.write_text(text.replace(old, new, 1), encoding="utf-8")
           PY
 
-      - name: Build APK
-        run: npx tauri android build --apk --ci
+      - name: Build APK (arm64-v8a)
+        run: npx tauri android build --apk --ci --target aarch64
         env:
           NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
 
