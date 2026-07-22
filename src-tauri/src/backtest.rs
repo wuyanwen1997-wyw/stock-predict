@@ -1,3 +1,4 @@
+use crate::algo::backtest::{classify_change, pct, round2, HitCounters};
 use crate::cninfo::{self, MessageArchive};
 use crate::factor_model;
 use crate::models::{BacktestRecord, BacktestResult, DailyBar, Stock};
@@ -5,8 +6,7 @@ use crate::predictor;
 use crate::strategy::{self, StrategyCompose};
 use chrono::Duration;
 
-/// 有效信号出手线：领先一侧概率 ≥ 该值才计入「整体/有效准确率」
-const ACTIONABLE_LEAD: f64 = 55.0;
+pub use crate::algo::backtest::ACTIONABLE_LEAD;
 
 pub async fn run_compose(
     stock: &Stock,
@@ -47,20 +47,7 @@ pub async fn run_compose(
     let uses_capital = capital_ref.map(|a| a.usable_days() > 0).unwrap_or(false);
 
     let mut records = Vec::new();
-    let mut correct_all = 0u32;
-    let mut total_all = 0u32;
-    let mut correct_act = 0u32;
-    let mut total_act = 0u32;
-    let mut up_hits = 0u32;
-    let mut up_total = 0u32;
-    let mut down_hits = 0u32;
-    let mut down_total = 0u32;
-    let mut up_hits_act = 0u32;
-    let mut up_total_act = 0u32;
-    let mut down_hits_act = 0u32;
-    let mut down_total_act = 0u32;
-    let mut hc_correct = 0u32;
-    let mut hc_total = 0u32;
+    let mut hits = HitCounters::default();
 
     for i in lookback..(bars.len() - horizon) {
         let window = &bars[i + 1 - lookback..=i];
@@ -83,50 +70,13 @@ pub async fn run_compose(
         let change_pct = (future_close - current_price) / current_price * 100.0;
         let actual = classify_change(change_pct);
         let is_correct = signal.predicted == actual;
-        let lead = signal.up_probability.max(signal.down_probability);
-        let actionable = lead + 1e-9 >= ACTIONABLE_LEAD;
-
-        total_all += 1;
-        if is_correct {
-            correct_all += 1;
-        }
-
-        if signal.predicted == "up" {
-            up_total += 1;
-            if actual == "up" {
-                up_hits += 1;
-            }
-        } else {
-            down_total += 1;
-            if actual == "down" {
-                down_hits += 1;
-            }
-        }
-
-        if actionable {
-            total_act += 1;
-            if is_correct {
-                correct_act += 1;
-            }
-            if signal.predicted == "up" {
-                up_total_act += 1;
-                if actual == "up" {
-                    up_hits_act += 1;
-                }
-            } else {
-                down_total_act += 1;
-                if actual == "down" {
-                    down_hits_act += 1;
-                }
-            }
-        }
-
-        if signal.high_confidence {
-            hc_total += 1;
-            if is_correct {
-                hc_correct += 1;
-            }
-        }
+        hits.observe(
+            &signal.predicted,
+            actual,
+            signal.up_probability,
+            signal.down_probability,
+            signal.high_confidence,
+        );
 
         records.push(BacktestRecord {
             date: bars[i].date.clone(),
@@ -144,18 +94,18 @@ pub async fn run_compose(
         });
     }
 
-    let all_day_accuracy = pct(correct_all, total_all);
-    let actionable_accuracy = pct(correct_act, total_act);
-    let high_confidence_accuracy = pct(hc_correct, hc_total);
+    let all_day_accuracy = pct(hits.correct_all, hits.total_all);
+    let actionable_accuracy = pct(hits.correct_act, hits.total_act);
+    let high_confidence_accuracy = pct(hits.hc_correct, hits.hc_total);
     let threshold = predictor::HIGH_CONF_THRESHOLD;
-    let up_hit_rate = pct(up_hits, up_total);
-    let down_hit_rate = pct(down_hits, down_total);
-    let up_hit_rate_actionable = pct(up_hits_act, up_total_act);
-    let down_hit_rate_actionable = pct(down_hits_act, down_total_act);
+    let up_hit_rate = pct(hits.up_hits, hits.up_total);
+    let down_hit_rate = pct(hits.down_hits, hits.down_total);
+    let up_hit_rate_actionable = pct(hits.up_hits_act, hits.up_total_act);
+    let down_hit_rate_actionable = pct(hits.down_hits_act, hits.down_total_act);
 
     // 主指标始终按「全部预测日」统计；有效口径另列
     let direction_accuracy = all_day_accuracy;
-    let total_samples = total_all;
+    let total_samples = hits.total_all;
 
     let mut extra_notes = String::new();
     if needs_message {
@@ -200,16 +150,16 @@ pub async fn run_compose(
     let summary = if selective {
         format!(
             "近 {} 个样本回测（回看 {} 日 · 预测{}{}）：全样本准确率 {:.1}%（{} / {}）；有效信号 {} 次 / {:.1}%；高置信 {} 次 / {:.1}%。看涨全量 {:.1}% / 有效 {:.1}%；看跌全量 {:.1}% / 有效 {:.1}%。",
-            total_all,
+            hits.total_all,
             lookback,
             horizon_note,
             extra_notes,
             all_day_accuracy,
-            correct_all,
-            total_all,
-            total_act,
+            hits.correct_all,
+            hits.total_all,
+            hits.total_act,
             actionable_accuracy,
-            hc_total,
+            hits.hc_total,
             high_confidence_accuracy,
             up_hit_rate,
             up_hit_rate_actionable,
@@ -219,12 +169,12 @@ pub async fn run_compose(
     } else {
         format!(
             "近 {} 个样本组合回测（回看 {} 日 · 预测{}{}）：整体 {:.1}%；高置信 {} 次 / {:.1}%。看涨 {:.1}%（有效 {:.1}%）；看跌 {:.1}%（有效 {:.1}%）。",
-            total_all,
+            hits.total_all,
             lookback,
             horizon_note,
             extra_notes,
             direction_accuracy,
-            hc_total,
+            hits.hc_total,
             high_confidence_accuracy,
             up_hit_rate,
             up_hit_rate_actionable,
@@ -240,17 +190,17 @@ pub async fn run_compose(
         direction_accuracy,
         actionable_accuracy,
         all_day_accuracy,
-        actionable_samples: total_act,
+        actionable_samples: hits.total_act,
         selective_mode: selective,
         up_hit_rate,
         down_hit_rate,
         up_hit_rate_actionable,
         down_hit_rate_actionable,
-        up_samples: up_total,
-        down_samples: down_total,
-        up_samples_actionable: up_total_act,
-        down_samples_actionable: down_total_act,
-        high_confidence_samples: hc_total,
+        up_samples: hits.up_total,
+        down_samples: hits.down_total,
+        up_samples_actionable: hits.up_total_act,
+        down_samples_actionable: hits.down_total_act,
+        high_confidence_samples: hits.hc_total,
         high_confidence_accuracy,
         high_confidence_threshold: threshold,
         flat_threshold_pct: 0.0,
@@ -288,26 +238,6 @@ pub async fn run(stock: &Stock, algorithm: &str, bars: &[DailyBar], lookback_day
         }
     }
     run_compose(stock, bars, &compose, 1).await
-}
-
-fn classify_change(change_pct: f64) -> &'static str {
-    if change_pct > 0.0 {
-        "up"
-    } else {
-        "down"
-    }
-}
-
-fn pct(hits: u32, total: u32) -> f64 {
-    if total == 0 {
-        0.0
-    } else {
-        (hits as f64 / total as f64 * 1000.0).round() / 10.0
-    }
-}
-
-fn round2(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
 }
 
 fn empty_result(

@@ -80,30 +80,6 @@ pub async fn fetch_intraday_trends(stock: &Stock) -> Result<Vec<PricePoint>, Str
     parse_em_trends(&resp)
 }
 
-/// 根据日线收盘价计算历史波动率（日收益率标准差）
-pub fn calc_volatility(bars: &[DailyBar]) -> f64 {
-    if bars.len() < 5 {
-        return 0.02;
-    }
-
-    let mut returns = Vec::new();
-    for w in bars.windows(2) {
-        let prev = w[0].close;
-        let curr = w[1].close;
-        if prev > 0.0 && curr > 0.0 {
-            returns.push((curr - prev) / prev);
-        }
-    }
-
-    if returns.is_empty() {
-        return 0.02;
-    }
-
-    let mean = returns.iter().sum::<f64>() / returns.len() as f64;
-    let variance = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
-    variance.sqrt().clamp(0.005, 0.08)
-}
-
 fn parse_em_trends(resp: &serde_json::Value) -> Result<Vec<PricePoint>, String> {
     let lines = resp
         .pointer("/data/trends")

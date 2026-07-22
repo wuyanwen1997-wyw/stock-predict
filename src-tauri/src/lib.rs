@@ -1,3 +1,4 @@
+pub mod algo;
 pub mod ashare;
 pub mod backtest;
 pub mod capital_flow;
