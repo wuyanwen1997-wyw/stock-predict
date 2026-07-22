@@ -15,6 +15,7 @@
     "android:dev": "powershell -ExecutionPolicy Bypass -File scripts/android-dev.ps1",
     "android:build": "tauri android build",
     "android:setup": "powershell -ExecutionPolicy Bypass -File scripts/setup-android.ps1",
+    "android:signing": "powershell -ExecutionPolicy Bypass -File scripts/apply-android-signing.ps1",
     "android:watch-build": "powershell -ExecutionPolicy Bypass -File scripts/watch-and-build-android.ps1"
   },
 

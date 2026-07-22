@@ -34,6 +34,8 @@ npm run android:dev     # 真机 / 模拟器调试
 npm run android:build   # 打 APK
 ```
 
+也可在 GitHub Actions 打 APK：手动运行 **Android APK** workflow，或推送 `v*` tag（详见 [SETUP-ANDROID.md](./SETUP-ANDROID.md)）。
+
 ## 项目结构
 
 ```

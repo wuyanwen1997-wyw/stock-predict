@@ -93,6 +93,34 @@ src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.
 
 Release 签名见 [Tauri Android 签名文档](https://v2.tauri.app/distribute/sign/android/)。
 
+## 6. GitHub Actions 打 APK
+
+仓库已提供 [`.github/workflows/android-apk.yml`](./.github/workflows/android-apk.yml)：
+
+| 触发方式 | 说明 |
+|---------|------|
+| Actions → **Android APK** → Run workflow | 手动构建，产物在 Artifacts |
+| 推送 tag `v*`（如 `v0.1.0`） | 构建并把 APK 挂到 GitHub Release |
+
+CI 每次会 `tauri android init`（`gen/android` 在 `.gitignore`），再 `tauri android build --apk`。
+
+未配置签名时产物为 **unsigned release APK**。本仓库已配置 Actions Secrets（`ANDROID_KEY_*`），CI 发版会打**签名包**。
+
+本地 keystore 在 `signing/`（已 gitignore，**勿提交、勿丢失**）：
+
+| 文件 | 说明 |
+|------|------|
+| `signing/upload-keystore.jks` | 签名证书 |
+| `signing/credentials.env` | 密码与 base64 备份（仅本机） |
+| `signing/keystore.properties` | 供 Gradle 读取 |
+
+`android init` 之后若要本地打签名包：
+
+```powershell
+npm run android:signing   # 同步到 gen/android 并 patch Gradle
+npm run android:build
+```
+
 ## 平台差异
 
 | 功能 | Windows 桌面 | Android |
