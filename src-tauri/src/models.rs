@@ -27,8 +27,117 @@ pub struct StockQuote {
     pub turnover: Option<f64>,
 }
 
+/// K 线周期。`date` 字段：日/周/月为 `YYYY-MM-DD`，分钟为 `YYYY-MM-DD HH:MM`。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum KlinePeriod {
+    #[default]
+    Day,
+    Week,
+    Month,
+    /// 1 分钟
+    Min1,
+    Min5,
+    Min15,
+    Min30,
+    Min60,
+}
+
+impl KlinePeriod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::Min1 => "min1",
+            Self::Min5 => "min5",
+            Self::Min15 => "min15",
+            Self::Min30 => "min30",
+            Self::Min60 => "min60",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "day" | "d" | "daily" | "101" => Ok(Self::Day),
+            "week" | "w" | "weekly" | "102" => Ok(Self::Week),
+            "month" | "m" | "monthly" | "103" => Ok(Self::Month),
+            "min1" | "1m" | "m1" | "1" => Ok(Self::Min1),
+            "min5" | "5m" | "m5" | "5" => Ok(Self::Min5),
+            "min15" | "15m" | "m15" | "15" => Ok(Self::Min15),
+            "min30" | "30m" | "m30" | "30" => Ok(Self::Min30),
+            "min60" | "60m" | "m60" | "60" | "hour" => Ok(Self::Min60),
+            other => Err(format!(
+                "未知 K 线周期: {other}（支持 day/week/month/min1/min5/min15/min30/min60）"
+            )),
+        }
+    }
+
+    pub fn is_intraday(self) -> bool {
+        matches!(
+            self,
+            Self::Min1 | Self::Min5 | Self::Min15 | Self::Min30 | Self::Min60
+        )
+    }
+
+    /// 东方财富 klt 参数
+    pub fn eastmoney_klt(self) -> u32 {
+        match self {
+            Self::Day => 101,
+            Self::Week => 102,
+            Self::Month => 103,
+            Self::Min1 => 1,
+            Self::Min5 => 5,
+            Self::Min15 => 15,
+            Self::Min30 => 30,
+            Self::Min60 => 60,
+        }
+    }
+
+    /// 腾讯 fqkline 周期段（day/week/month/m1…）
+    pub fn tencent_freq(self) -> &'static str {
+        match self {
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::Min1 => "m1",
+            Self::Min5 => "m5",
+            Self::Min15 => "m15",
+            Self::Min30 => "m30",
+            Self::Min60 => "m60",
+        }
+    }
+
+    /// 新浪 scale（分钟与日线；周/月新浪不稳，由上层跳过）
+    pub fn sina_scale(self) -> Option<u32> {
+        match self {
+            Self::Day => Some(240),
+            Self::Min1 => Some(1),
+            Self::Min5 => Some(5),
+            Self::Min15 => Some(15),
+            Self::Min30 => Some(30),
+            Self::Min60 => Some(60),
+            Self::Week | Self::Month => None,
+        }
+    }
+
+    pub fn default_limit(self) -> u32 {
+        match self {
+            Self::Day => 90,
+            Self::Week => 104,
+            Self::Month => 60,
+            Self::Min1 => 240,
+            Self::Min5 => 240,
+            Self::Min15 => 160,
+            Self::Min30 => 120,
+            Self::Min60 => 120,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DailyBar {
+    /// 日/周/月：`YYYY-MM-DD`；分钟：`YYYY-MM-DD HH:MM`
     pub date: String,
     pub open: f64,
     pub close: f64,

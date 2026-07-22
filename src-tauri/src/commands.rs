@@ -1,6 +1,6 @@
 use crate::models::{
-    AlgorithmInfo, AnalysisResult, BacktestResult, DailyBar, PredictionResult, ScreenResult, Stock,
-    StocksPayload,
+    AlgorithmInfo, AnalysisResult, BacktestResult, DailyBar, KlinePeriod, PricePoint,
+    PredictionResult, ScreenResult, Stock, StocksPayload,
 };
 use crate::screener::{self, ScreenRequest};
 use crate::strategy::{self, StrategyCompose, StrategySourceInfo};
@@ -177,8 +177,23 @@ pub async fn predict_stock(
 }
 
 #[tauri::command]
-pub async fn get_stock_klines(stock: Stock, limit: Option<u32>) -> Result<Vec<DailyBar>, String> {
-    market::fetch_daily_klines(&stock, limit.unwrap_or(90)).await
+pub async fn get_stock_klines(
+    stock: Stock,
+    limit: Option<u32>,
+    period: Option<String>,
+) -> Result<Vec<DailyBar>, String> {
+    let period = match period.as_deref() {
+        Some(raw) => KlinePeriod::parse(raw)?,
+        None => KlinePeriod::Day,
+    };
+    let limit = limit.unwrap_or_else(|| period.default_limit());
+    market::fetch_klines(&stock, period, limit).await
+}
+
+/// 当日分时走势点。
+#[tauri::command]
+pub async fn get_stock_intraday(stock: Stock) -> Result<Vec<PricePoint>, String> {
+    market::fetch_intraday_trends(&stock).await
 }
 
 #[tauri::command]

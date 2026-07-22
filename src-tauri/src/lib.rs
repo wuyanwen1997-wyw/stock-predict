@@ -1,3 +1,4 @@
+pub mod ashare;
 pub mod backtest;
 pub mod capital_flow;
 pub mod cninfo;
@@ -19,6 +20,7 @@ pub fn run() {
             commands::analyze_stock,
             commands::predict_stock,
             commands::get_stock_klines,
+            commands::get_stock_intraday,
             commands::backtest_stock,
             commands::list_algorithms,
             commands::list_strategy_sources,

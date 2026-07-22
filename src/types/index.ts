@@ -22,6 +22,7 @@ export interface AnalysisResult {
 }
 
 export interface DailyBar {
+  /** 日/周/月：YYYY-MM-DD；分钟：YYYY-MM-DD HH:MM */
   date: string;
   open: number;
   close: number;
@@ -30,6 +31,17 @@ export interface DailyBar {
   volume: number;
   change_pct?: number;
 }
+
+/** K 线周期：日 / 周 / 月 / 分钟 */
+export type KlinePeriod =
+  | "day"
+  | "week"
+  | "month"
+  | "min1"
+  | "min5"
+  | "min15"
+  | "min30"
+  | "min60";
 
 export interface BacktestRecord {
   date: string;

@@ -4,7 +4,9 @@ import type {
   AnalysisResult,
   BacktestResult,
   DailyBar,
+  KlinePeriod,
   PredictionResult,
+  PricePoint,
   ScreenRequest,
   ScreenResult,
   Stock,
@@ -53,8 +55,17 @@ export async function predictStock(
   });
 }
 
-export async function getStockKlines(stock: Stock, limit?: number) {
-  return invoke<DailyBar[]>("get_stock_klines", { stock, limit });
+export async function getStockKlines(
+  stock: Stock,
+  limit?: number,
+  period: KlinePeriod = "day",
+) {
+  return invoke<DailyBar[]>("get_stock_klines", { stock, limit, period });
+}
+
+/** 当日分时走势 */
+export async function getStockIntraday(stock: Stock) {
+  return invoke<PricePoint[]>("get_stock_intraday", { stock });
 }
 
 export async function backtestStock(
