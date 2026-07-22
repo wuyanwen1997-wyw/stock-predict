@@ -1,7 +1,7 @@
 {
   "name": "stock-predict",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,6 +15,10 @@
     "android:dev": "powershell -ExecutionPolicy Bypass -File scripts/android-dev.ps1",
     "android:build": "tauri android build",
     "android:setup": "powershell -ExecutionPolicy Bypass -File scripts/setup-android.ps1",
+    "android:signing": "powershell -ExecutionPolicy Bypass -File scripts/apply-android-signing.ps1",
+    "android:icons": "python scripts/sync-android-icons.py",
+    "version:get": "python scripts/bump-version.py --get",
+    "version:bump": "python scripts/bump-version.py",
     "android:watch-build": "powershell -ExecutionPolicy Bypass -File scripts/watch-and-build-android.ps1"
   },
 

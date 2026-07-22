@@ -34,6 +34,19 @@ npm run android:dev     # 真机 / 模拟器调试
 npm run android:build   # 打 APK
 ```
 
+也可在 GitHub Actions 打 APK：手动运行 **Android APK** workflow，或推送 `v*` tag（详见 [SETUP-ANDROID.md](./SETUP-ANDROID.md)）。
+
+发版改版本号请用脚本（一次改齐 Node / Tauri / Cargo），勿手改多处：
+
+```bash
+npm run version:get
+npm run version:bump -- --auto                # patch +1，只改文件
+npm run version:bump -- --auto --tag --push   # + commit + tag + push（触发 APK CI）
+npm run version:bump -- 0.1.2 --tag           # 也可显式指定版本
+```
+
+Agent 维护说明见 `.cursor/skills/release/SKILL.md`。
+
 ## 项目结构
 
 ```

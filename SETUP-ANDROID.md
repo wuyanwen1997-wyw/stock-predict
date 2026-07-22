@@ -93,6 +93,49 @@ src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.
 
 Release 签名见 [Tauri Android 签名文档](https://v2.tauri.app/distribute/sign/android/)。
 
+## 6. GitHub Actions 打 APK
+
+仓库已提供 [`.github/workflows/android-apk.yml`](./.github/workflows/android-apk.yml)：
+
+| 触发方式 | 说明 |
+|---------|------|
+| Actions → **Android APK** → Run workflow | 手动构建，产物在 Artifacts |
+| 推送 tag `v*`（如 `v0.1.0`） | 构建并把 APK 挂到 GitHub Release |
+
+CI 每次会 `tauri android init`（`gen/android` 在 `.gitignore`），再 `tauri android build --apk`。
+
+未配置签名时产物为 **unsigned release APK**。本仓库已配置 Actions Secrets（`ANDROID_KEY_*`），CI 发版会打**签名包**。
+
+本地 keystore 在 `signing/`（已 gitignore，**勿提交、勿丢失**）：
+
+| 文件 | 说明 |
+|------|------|
+| `signing/upload-keystore.jks` | 签名证书 |
+| `signing/credentials.env` | 密码与 base64 备份（仅本机） |
+| `signing/keystore.properties` | 供 Gradle 读取 |
+
+`android init` 之后同步图标与签名：
+
+```powershell
+npm run android:icons     # 把 icons/android 拷到 gen/android（CI 也会做）
+npm run android:signing   # 同步到 gen/android 并 patch Gradle
+npm run android:build
+```
+
+**图标说明：** Android 桌面图标必须落在 `src-tauri/gen/android/app/src/main/res/`。仓库里的 `src-tauri/icons/android/` 是源文件；`gen/` 被 gitignore，故 `android init` 后要跑 `android:icons`，否则会是默认 Tauri 图标。
+
+## 7. 改版本号
+
+一次改齐 Node / Tauri / Cargo（勿手改多处）：
+
+```bash
+npm run version:get
+npm run version:bump -- --auto                # patch +1，只改文件
+npm run version:bump -- --auto --tag --push   # commit + tag + push → 触发 CI
+```
+
+详见 `.cursor/skills/release/SKILL.md`。
+
 ## 平台差异
 
 | 功能 | Windows 桌面 | Android |
