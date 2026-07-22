@@ -4,5 +4,9 @@
   "description": "Android capabilities for StockPredict",
   "platforms": ["android"],
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "notification:default",
+    "background-service:default"
+  ]
 }

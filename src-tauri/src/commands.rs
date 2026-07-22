@@ -2,9 +2,11 @@ use crate::models::{
     AlgorithmInfo, AnalysisResult, BacktestResult, DailyBar, KlinePeriod, PricePoint,
     PredictionResult, ScreenResult, Stock, StocksPayload,
 };
+use crate::monitor::{MonitorSnapshot, SharedMonitor};
 use crate::screener::{self, ScreenRequest};
 use crate::strategy::{self, StrategyCompose, StrategySourceInfo};
 use crate::{backtest, market, predictor};
+use serde::Serialize;
 use std::collections::HashSet;
 use std::fs;
 use tauri::AppHandle;
@@ -277,4 +279,47 @@ pub async fn run_smart_screen(
     let seed: Vec<Stock> =
         serde_json::from_str(&text).map_err(|e| format!("解析股票列表失败: {e}"))?;
     screener::run_smart_screen(&app, seed, request).await
+}
+
+/// 同步盯盘配置（自选 + 规则）；开启后台服务前调用。
+#[tauri::command]
+pub async fn monitor_sync_config(
+    app: AppHandle,
+    snapshot: MonitorSnapshot,
+) -> Result<(), String> {
+    let shared = app
+        .try_state::<SharedMonitor>()
+        .ok_or_else(|| "MonitorShared 未注册".to_string())?;
+    let mut guard = shared.lock().await;
+    guard.apply_snapshot(snapshot);
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorStatus {
+    pub enabled: bool,
+    pub stock_count: usize,
+    pub rule_count: usize,
+    pub interval_secs: u64,
+    pub consecutive_failures: u32,
+}
+
+#[tauri::command]
+pub async fn monitor_get_status(app: AppHandle) -> Result<MonitorStatus, String> {
+    let shared = app
+        .try_state::<SharedMonitor>()
+        .ok_or_else(|| "MonitorShared 未注册".to_string())?;
+    let guard = shared.lock().await;
+    Ok(MonitorStatus {
+        enabled: guard.enabled,
+        stock_count: guard.stocks.len(),
+        rule_count: guard.rules.iter().filter(|r| r.enabled).count(),
+        interval_secs: if guard.interval_secs == 0 {
+            crate::monitor::default_interval_secs()
+        } else {
+            guard.interval_secs
+        },
+        consecutive_failures: guard.consecutive_failures,
+    })
 }

@@ -5,6 +5,7 @@ import type {
   BacktestResult,
   DailyBar,
   KlinePeriod,
+  MonitorRule,
   PredictionResult,
   PricePoint,
   ScreenRequest,
@@ -119,4 +120,27 @@ export async function getTushareTokenStatus() {
 
 export async function setTushareToken(token: string) {
   return invoke<TushareTokenStatus>("set_tushare_token", { token });
+}
+
+export type MonitorSnapshot = {
+  stocks: Stock[];
+  rules: MonitorRule[];
+  interval_secs: number;
+  enabled: boolean;
+};
+
+export type MonitorStatus = {
+  enabled: boolean;
+  stockCount: number;
+  ruleCount: number;
+  intervalSecs: number;
+  consecutiveFailures: number;
+};
+
+export async function monitorSyncConfig(snapshot: MonitorSnapshot) {
+  return invoke<void>("monitor_sync_config", { snapshot });
+}
+
+export async function monitorGetStatus() {
+  return invoke<MonitorStatus>("monitor_get_status");
 }

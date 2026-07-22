@@ -118,6 +118,7 @@ CI 每次会 `tauri android init`（`gen/android` 在 `.gitignore`），再 `tau
 
 ```powershell
 npm run android:icons     # 把 icons/android 拷到 gen/android（CI 也会做）
+py -3 scripts/patch-android-mainactivity.py  # 盯盘后台：nativeLibName=stock_predict_lib
 npm run android:signing   # 同步到 gen/android 并 patch Gradle
 npm run android:build
 ```

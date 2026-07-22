@@ -2,6 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import { useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { useStockStore } from "@/stores/stockStore";
+import { useMonitorStore } from "@/stores/monitorStore";
 
 const links = [
   { to: "/", label: "首页", icon: "⌂" },
@@ -15,12 +16,15 @@ export function Layout() {
   const init = useStockStore((s) => s.init);
   const selectedStock = useStockStore((s) => s.selectedStock);
   const loading = useStockStore((s) => s.loading);
+  const ensureListeners = useMonitorStore((s) => s.ensureListeners);
+  const monitorRunning = useMonitorStore((s) => s.running);
 
   useEffect(() => {
     void init().then(() => {
       void useStockStore.getState().runPrediction();
+      void ensureListeners();
     });
-  }, [init]);
+  }, [init, ensureListeners]);
 
   return (
     <div className="relative flex h-dvh flex-col overflow-hidden bg-[#030712] text-slate-100">
@@ -57,9 +61,11 @@ export function Layout() {
         <div className="truncate text-[11px] text-slate-500">
           {loading
             ? "加载中..."
-            : selectedStock
-              ? `${selectedStock.name}`
-              : "智能涨跌预测"}
+            : monitorRunning
+              ? "盯盘中"
+              : selectedStock
+                ? `${selectedStock.name}`
+                : "智能涨跌预测"}
         </div>
       </header>
 
