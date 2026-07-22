@@ -4,5 +4,9 @@
   "description": "Default capabilities for StockPredict desktop",
   "platforms": ["linux", "macOS", "windows"],
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "notification:default",
+    "background-service:default"
+  ]
 }

@@ -38,5 +38,11 @@
       "resources/stocks.json": "resources/stocks.json",
       "resources/message_weights_broad_etf.json": "resources/message_weights_broad_etf.json"
     }
+  },
+  "plugins": {
+    "background-service": {
+      "androidForegroundServiceTypes": ["dataSync", "remoteMessaging"],
+      "androidValidateForegroundServiceType": true
+    }
   }
 }

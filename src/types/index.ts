@@ -200,6 +200,41 @@ export interface ScreenProgressEvent {
   code: string;
 }
 
+/** 盯盘预警条件 */
+export type AlertCondition =
+  | { kind: "price_above"; value: number }
+  | { kind: "price_below"; value: number }
+  | { kind: "change_pct_above"; value: number }
+  | { kind: "change_pct_below"; value: number };
+
+export interface MonitorRule {
+  id: string;
+  code: string;
+  name: string;
+  enabled: boolean;
+  condition: AlertCondition;
+  cooldown_sec: number;
+  max_per_day: number;
+  created_at: string;
+}
+
+export interface MonitorAlert {
+  id: string;
+  rule_id: string;
+  code: string;
+  name: string;
+  message: string;
+  price?: number;
+  change_pct?: number;
+  fired_at: string;
+}
+
+export interface MonitorQuoteEvent {
+  code: string;
+  price?: number;
+  changePct?: number;
+}
+
 export interface ScreenResult {
   hits: ScreenHit[];
   universe_size: number;

@@ -135,6 +135,18 @@ export function SettingsPage() {
         </div>
       </section>
 
+      <section className="mb-8">
+        <h2 className="mb-3 text-sm font-medium text-slate-300">盯盘助手</h2>
+        <div className="rounded-2xl border border-white/5 bg-slate-900/50 p-4 text-xs leading-relaxed text-slate-500">
+          <p>
+            在「自选」页开启盯盘后，应用会在交易时段轮询行情；触达预警时弹出<strong className="font-medium text-slate-400">系统通知</strong>。
+          </p>
+          <p className="mt-2">
+            Android 锁屏监控依赖前台服务，状态栏会常驻「盯盘中」通知。若厂商省电限制后台，请在系统设置中允许本应用后台运行/关闭电池优化。强制停止应用后需重新开启盯盘。
+          </p>
+        </div>
+      </section>
+
       <section>
         <h2 className="mb-3 text-sm font-medium text-slate-300">预测算法</h2>
         <div className="space-y-3">
