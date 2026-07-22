@@ -16,6 +16,8 @@
     "android:build": "tauri android build",
     "android:setup": "powershell -ExecutionPolicy Bypass -File scripts/setup-android.ps1",
     "android:signing": "powershell -ExecutionPolicy Bypass -File scripts/apply-android-signing.ps1",
+    "version:get": "python scripts/bump-version.py --get",
+    "version:bump": "python scripts/bump-version.py",
     "android:watch-build": "powershell -ExecutionPolicy Bypass -File scripts/watch-and-build-android.ps1"
   },
 

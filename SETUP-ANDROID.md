@@ -121,6 +121,18 @@ npm run android:signing   # 同步到 gen/android 并 patch Gradle
 npm run android:build
 ```
 
+## 7. 改版本号
+
+一次改齐 Node / Tauri / Cargo（勿手改多处）：
+
+```bash
+npm run version:get
+npm run version:bump -- --auto                # patch +1，只改文件
+npm run version:bump -- --auto --tag --push   # commit + tag + push → 触发 CI
+```
+
+详见 `.cursor/skills/release/SKILL.md`。
+
 ## 平台差异
 
 | 功能 | Windows 桌面 | Android |
