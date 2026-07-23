@@ -12,6 +12,7 @@ import {
 import type {
   AlgorithmInfo,
   BacktestResult,
+  BsMarker,
   DailyBar,
   PredictionResult,
   ScreenFilters,
@@ -230,6 +231,8 @@ interface StockState {
   horizonDays: number;
   prediction: PredictionResult | null;
   klines: DailyBar[];
+  /** MACD 金叉/死叉主图标记 */
+  bsMarkers: BsMarker[];
   backtest: BacktestResult | null;
   watchlist: Stock[];
   loading: boolean;
@@ -299,6 +302,7 @@ export const useStockStore = create<StockState>((set, get) => ({
   horizonDays: loadHorizonDays(loadPredictMode()),
   prediction: null,
   klines: [],
+  bsMarkers: [],
   backtest: null,
   watchlist: [],
   loading: false,
@@ -405,6 +409,7 @@ export const useStockStore = create<StockState>((set, get) => ({
       selectedStock: stock,
       prediction: null,
       klines: [],
+      bsMarkers: [],
       backtest: null,
       lookbackDays: compose.lookback_days,
     });
@@ -549,6 +554,7 @@ export const useStockStore = create<StockState>((set, get) => ({
       set({
         prediction: result.prediction,
         klines: result.klines,
+        bsMarkers: result.bs_markers ?? [],
         backtest: result.backtest,
         predicting: false,
         loadingKlines: false,
@@ -561,6 +567,7 @@ export const useStockStore = create<StockState>((set, get) => ({
         predicting: false,
         loadingKlines: false,
         loadingBacktest: false,
+        bsMarkers: [],
       });
     }
   },

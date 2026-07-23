@@ -9,11 +9,13 @@
 //! | [`sentiment`] | 标题(+档案) → 消息情绪分 |
 //! | [`capital`] | 资金流归档 → 方向强度 |
 //! | [`backtest`] | 预测 vs 实际 → 命中统计口径 |
+//! | [`bs_markers`] | K 线 → MACD 金叉/死叉 B/S（主图叠加，非融合） |
 //!
 //! 领域编排（`strategy` / `predictor` / `backtest` / `capital_flow`）负责 IO 与用例；
 //! 行情 HTTP 在 `ashare`。详见 `docs/algo/`。
 
 pub mod backtest;
+pub mod bs_markers;
 pub mod capital;
 pub mod factor;
 pub mod fuse;
@@ -22,6 +24,7 @@ pub mod stats;
 pub mod tech;
 
 pub use backtest::{classify_change, pct, round2, HitCounters, ACTIONABLE_LEAD};
+pub use bs_markers::{compute_macd_bs, filter_markers_by_dates};
 pub use capital::{evaluate_as_of, CapitalFlowArchive, CapitalFlowSignal};
 pub use factor::{
     clamp_lookback, compute, compute_styled, compute_styled_for_horizon, style_for_stock,

@@ -1,10 +1,11 @@
 import { motion } from "framer-motion";
 import { useMemo, useRef, useState, useEffect } from "react";
 import { formatPrice } from "@/lib/utils";
-import type { DailyBar } from "@/types";
+import type { BsMarker, DailyBar } from "@/types";
 
 interface Props {
   bars: DailyBar[];
+  markers?: BsMarker[];
   loading?: boolean;
 }
 
@@ -16,10 +17,12 @@ function formatDateLabel(date: string) {
 
 function ChartTooltip({
   bar,
+  marker,
   x,
   containerWidth,
 }: {
   bar: DailyBar;
+  marker?: BsMarker;
   x: number;
   containerWidth: number;
 }) {
@@ -44,11 +47,22 @@ function ChartTooltip({
         <span className="text-slate-500">低</span>
         <span>¥{formatPrice(bar.low)}</span>
       </div>
+      {marker && (
+        <div
+          className={
+            marker.kind === "buy"
+              ? "mt-1.5 text-rose-400"
+              : "mt-1.5 text-emerald-400"
+          }
+        >
+          {marker.kind === "buy" ? "买入 B（MACD 金叉）" : "卖出 S（MACD 死叉）"}
+        </div>
+      )}
     </div>
   );
 }
 
-export function KlineChart({ bars, loading }: Props) {
+export function KlineChart({ bars, markers = [], loading }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
@@ -77,11 +91,17 @@ export function KlineChart({ bars, loading }: Props) {
   const latest = bars[bars.length - 1];
   const chartWidth = width > 0 ? width : 640;
 
+  const markerByDate = useMemo(() => {
+    const map = new Map<string, BsMarker>();
+    for (const m of markers) map.set(m.date, m);
+    return map;
+  }, [markers]);
+
   const layout = useMemo(() => {
     if (bars.length === 0) return null;
 
-    const height = 240;
-    const pad = { top: 16, right: 12, bottom: 28, left: 52 };
+    const height = 260;
+    const pad = { top: 28, right: 12, bottom: 36, left: 52 };
     const plotW = Math.max(chartWidth - pad.left - pad.right, 1);
     const plotH = height - pad.top - pad.bottom;
 
@@ -103,6 +123,7 @@ export function KlineChart({ bars, loading }: Props) {
       const yOpen = yScale(bar.open);
       const yClose = yScale(bar.close);
       const up = bar.close >= bar.open;
+      const marker = markerByDate.get(bar.date);
       return {
         bar,
         cx,
@@ -112,6 +133,7 @@ export function KlineChart({ bars, loading }: Props) {
         bodyH: Math.max(Math.abs(yClose - yOpen), 1),
         up,
         color: up ? "#f87171" : "#34d399",
+        marker,
       };
     });
 
@@ -131,7 +153,7 @@ export function KlineChart({ bars, loading }: Props) {
       .filter((t) => t.i % xTickStep === 0 || t.i === bars.length - 1);
 
     return { height, pad, candles, yTicks, xTicks, slot, bodyW };
-  }, [bars, chartWidth]);
+  }, [bars, chartWidth, markerByDate]);
 
   return (
     <motion.div
@@ -144,6 +166,7 @@ export function KlineChart({ bars, loading }: Props) {
           <h3 className="text-base font-semibold text-slate-100">日 K 走势</h3>
           <p className="mt-1 text-xs text-slate-500">
             近 {bars.length} 个交易日 · 前复权日线
+            {markers.length > 0 ? " · MACD 金叉/死叉 B/S" : ""}
           </p>
         </div>
         {latest && (
@@ -172,6 +195,7 @@ export function KlineChart({ bars, loading }: Props) {
             {hoverIndex != null && layout.candles[hoverIndex] && (
               <ChartTooltip
                 bar={layout.candles[hoverIndex].bar}
+                marker={layout.candles[hoverIndex].marker}
                 x={layout.candles[hoverIndex].cx}
                 containerWidth={chartWidth}
               />
@@ -251,6 +275,30 @@ export function KlineChart({ bars, loading }: Props) {
                     fill={c.color}
                     stroke={c.color}
                   />
+                  {c.marker?.kind === "buy" && (
+                    <text
+                      x={c.cx}
+                      y={c.yLow + 14}
+                      textAnchor="middle"
+                      fill="#f87171"
+                      fontSize={11}
+                      fontWeight={700}
+                    >
+                      B
+                    </text>
+                  )}
+                  {c.marker?.kind === "sell" && (
+                    <text
+                      x={c.cx}
+                      y={c.yHigh - 4}
+                      textAnchor="middle"
+                      fill="#34d399"
+                      fontSize={11}
+                      fontWeight={700}
+                    >
+                      S
+                    </text>
+                  )}
                   {hoverIndex === i && (
                     <line
                       x1={c.cx}

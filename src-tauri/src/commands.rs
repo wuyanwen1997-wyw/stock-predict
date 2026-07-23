@@ -159,10 +159,16 @@ pub async fn analyze_stock(
         klines.clone()
     };
 
+    // 全量 K 线算 MACD，再按 chart 窗口日期过滤，避免截断导致 EMA 失真
+    let all_bs = crate::algo::compute_macd_bs(&klines);
+    let chart_dates: Vec<String> = chart_klines.iter().map(|b| b.date.clone()).collect();
+    let bs_markers = crate::algo::filter_markers_by_dates(&all_bs, &chart_dates);
+
     Ok(AnalysisResult {
         prediction,
         klines: chart_klines,
         backtest: backtest_result,
+        bs_markers,
     })
 }
 
