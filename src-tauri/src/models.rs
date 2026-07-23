@@ -275,11 +275,29 @@ pub struct BacktestResult {
     pub records: Vec<BacktestRecord>,
 }
 
+/// K 线主图 B/S 标记方向（MACD 金叉/死叉等）
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BsMarkerKind {
+    Buy,
+    Sell,
+}
+
+/// K 线主图买卖点（与融合预测无关）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BsMarker {
+    pub date: String,
+    pub kind: BsMarkerKind,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisResult {
     pub prediction: PredictionResult,
     pub klines: Vec<DailyBar>,
     pub backtest: BacktestResult,
+    /// MACD 金叉/死叉等主图 B/S；缺省空数组以兼容旧客户端
+    #[serde(default)]
+    pub bs_markers: Vec<BsMarker>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

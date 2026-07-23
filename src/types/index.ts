@@ -15,10 +15,20 @@ export interface StocksPayload {
   warning?: string;
 }
 
+/** K 线主图 B/S（MACD 金叉/死叉，与融合预测无关） */
+export type BsMarkerKind = "buy" | "sell";
+
+export interface BsMarker {
+  date: string;
+  kind: BsMarkerKind;
+}
+
 export interface AnalysisResult {
   prediction: PredictionResult;
   klines: DailyBar[];
   backtest: BacktestResult;
+  /** MACD 金叉/死叉等主图 B/S；缺省空数组 */
+  bs_markers?: BsMarker[];
 }
 
 export interface DailyBar {

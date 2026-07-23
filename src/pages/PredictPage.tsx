@@ -37,6 +37,7 @@ export function PredictPage() {
   const selectedStock = useStockStore((s) => s.selectedStock);
   const prediction = useStockStore((s) => s.prediction);
   const klines = useStockStore((s) => s.klines);
+  const bsMarkers = useStockStore((s) => s.bsMarkers);
   const backtest = useStockStore((s) => s.backtest);
   const predicting = useStockStore((s) => s.predicting);
   const loading = useStockStore((s) => s.loading);
@@ -345,7 +346,11 @@ export function PredictPage() {
 
               <ProbabilityPanel prediction={prediction} backtest={backtest} />
               <SignalBreakdown signals={prediction.signals ?? []} />
-              <KlineChart bars={klines} loading={loadingKlines} />
+              <KlineChart
+                bars={klines}
+                markers={bsMarkers}
+                loading={loadingKlines}
+              />
               <BacktestPanel result={backtest} loading={loadingBacktest} />
 
               <div className="rounded-xl border border-amber-500/15 bg-amber-500/5 px-4 py-3 text-sm leading-relaxed text-amber-200/80">

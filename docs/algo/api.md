@@ -129,6 +129,21 @@ K 线不足时返回 `status: skip` 的中性贡献（经 `neutral`）。
 
 ---
 
+## 8. `bs_markers` — K 线主图 B/S（MACD）
+
+供预测页日 K **叠加标注**，与融合预测 / 回测方向**无关**，不进入 `fuse` 权重。
+
+| 符号 | 说明 |
+|------|------|
+| `MACD_FAST` / `MACD_SLOW` / `MACD_SIGNAL` | `12` / `26` / `9`（通达信/同花顺默认） |
+| `MIN_BARS` | `35`：不足则返回空列表 |
+| `compute_macd_bs(bars)` | 收盘价 EMA → DIF/DEA；DIF 上穿 DEA → `Buy`(B)，下穿 → `Sell`(S) |
+| `filter_markers_by_dates(markers, dates)` | 按 chart 窗口日期过滤 |
+
+**编排约定**：`analyze_stock` 对**全量**拉取的日 K 调用 `compute_macd_bs`，再按下发的 `chart_klines` 日期过滤，避免窗口截断导致 EMA 失真。DTO 为 `models::BsMarker { date, kind }`，经 `AnalysisResult.bs_markers` 下发。
+
+---
+
 ## 依赖方向
 
 ```
