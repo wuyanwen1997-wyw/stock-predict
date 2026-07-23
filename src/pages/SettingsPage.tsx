@@ -7,6 +7,11 @@ import {
   setTushareToken,
   type TushareTokenStatus,
 } from "@/services/api";
+import {
+  applyImportedSnapshotFlag,
+  exportUserData,
+  importUserData,
+} from "@/services/userPersistence";
 
 export function SettingsPage() {
   const algorithms = useStockStore((s) => s.algorithms);
@@ -14,12 +19,15 @@ export function SettingsPage() {
   const setAlgorithm = useStockStore((s) => s.setAlgorithm);
   const lookbackDays = useStockStore((s) => s.lookbackDays);
   const setLookbackDays = useStockStore((s) => s.setLookbackDays);
+  const applyUserSnapshot = useStockStore((s) => s.applyUserSnapshot);
 
   const lookbackOptions = [25, 50, 60, 90, 120];
   const [tokenInput, setTokenInput] = useState("");
   const [tokenStatus, setTokenStatus] = useState<TushareTokenStatus | null>(null);
   const [tokenMsg, setTokenMsg] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [backupMsg, setBackupMsg] = useState<string | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
 
   useEffect(() => {
     getTushareTokenStatus()
@@ -47,6 +55,43 @@ export function SettingsPage() {
     }
   }
 
+  async function exportBackup() {
+    setBackupBusy(true);
+    setBackupMsg(null);
+    try {
+      const json = await exportUserData();
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      a.href = url;
+      a.download = `stock-predict-backup-${stamp}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setBackupMsg("已导出用户数据备份");
+    } catch (e) {
+      setBackupMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  async function importBackup(file: File) {
+    setBackupBusy(true);
+    setBackupMsg(null);
+    try {
+      const text = await file.text();
+      const snap = await importUserData(text);
+      applyImportedSnapshotFlag();
+      applyUserSnapshot(snap);
+      setBackupMsg("导入成功，自选与配置已恢复");
+    } catch (e) {
+      setBackupMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
   return (
     <div className="h-full min-h-0 overflow-y-auto p-6 lg:p-8">
       <motion.header
@@ -56,7 +101,7 @@ export function SettingsPage() {
       >
         <h1 className="text-2xl font-semibold text-slate-100">设置</h1>
         <p className="mt-2 text-sm text-slate-400">
-          回看天数可在预测页调整。每只股票的信号组合配置会自动保存在本地。
+          回看天数可在预测页调整。自选与信号组合保存在应用数据目录，升级不会丢失；可在下方导出/导入备份。
         </p>
       </motion.header>
 
@@ -133,6 +178,39 @@ export function SettingsPage() {
           </div>
           {tokenMsg && <p className="mt-2 text-xs text-slate-500">{tokenMsg}</p>}
         </div>
+      </section>
+
+      <section className="mb-8">
+        <h2 className="mb-3 text-sm font-medium text-slate-300">数据备份</h2>
+        <p className="mb-3 text-xs text-slate-500">
+          自选、策略组合、盯盘规则与偏好保存在应用数据目录（升级安装包不会清除）。可导出 JSON
+          换机恢复；导入前会自动备份当前库。
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            disabled={backupBusy}
+            onClick={() => void exportBackup()}
+            className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-2.5 text-sm font-medium text-cyan-300 transition hover:bg-cyan-500/20 disabled:opacity-50"
+          >
+            {backupBusy ? "处理中…" : "导出备份"}
+          </button>
+          <label className="cursor-pointer rounded-xl border border-white/10 px-4 py-2.5 text-sm text-slate-300 transition hover:border-white/20 hover:text-slate-100">
+            导入备份
+            <input
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              disabled={backupBusy}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (f) void importBackup(f);
+              }}
+            />
+          </label>
+        </div>
+        {backupMsg && <p className="mt-2 text-xs text-slate-500">{backupMsg}</p>}
       </section>
 
       <section className="mb-8">

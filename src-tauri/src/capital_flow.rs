@@ -68,30 +68,15 @@ pub enum FetchMode {
 }
 
 fn data_dir() -> PathBuf {
-    if let Ok(p) = std::env::var("STOCK_PREDICT_DATA") {
-        return PathBuf::from(p);
-    }
-    #[cfg(windows)]
-    {
-        if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            return PathBuf::from(local).join("stock-predict");
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(".stock-predict");
-        }
-    }
-    std::env::temp_dir().join("stock-predict")
+    crate::paths::app_data_dir()
 }
 
 fn token_path() -> PathBuf {
-    data_dir().join("tushare_token.txt")
+    crate::paths::token_path()
 }
 
 fn disk_cache_path() -> PathBuf {
-    data_dir().join("market_fund_flow.json")
+    crate::paths::fund_flow_cache_path()
 }
 
 /// 读取 Tushare token：环境变量 > 本地配置文件 > resources/tushare_token.txt
@@ -128,6 +113,11 @@ pub fn save_tushare_token(token: &str) -> Result<(), String> {
     std::fs::write(token_path(), t).map_err(|e| format!("保存 token 失败: {e}"))
 }
 
+/// 与 `paths::migrate_legacy_files_if_needed` 对齐；供未走 bootstrap 的路径调用。
+pub fn ensure_data_layout() {
+    crate::paths::migrate_legacy_files_if_needed();
+}
+
 fn parse_trade_date(raw: &str) -> Option<NaiveDate> {
     let s = raw.trim();
     if s.len() == 8 && s.chars().all(|c| c.is_ascii_digit()) {
@@ -142,6 +132,9 @@ fn load_disk_cache() -> CapitalFlowArchive {
     for path in [
         PathBuf::from("resources/market_fund_flow.json"),
         disk_cache_path(),
+        // 旧版根目录缓存
+        data_dir().join("market_fund_flow.json"),
+        crate::paths::legacy_data_dir().join("market_fund_flow.json"),
     ] {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
@@ -174,7 +167,7 @@ fn load_disk_cache() -> CapitalFlowArchive {
 }
 
 fn save_disk_cache(archive: &CapitalFlowArchive) {
-    let dir = data_dir();
+    let dir = crate::paths::cache_dir();
     let _ = std::fs::create_dir_all(&dir);
     let mut disk = DiskCache {
         updated_at: Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()),

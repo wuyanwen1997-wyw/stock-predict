@@ -329,3 +329,92 @@ pub async fn monitor_get_status(app: AppHandle) -> Result<MonitorStatus, String>
         consecutive_failures: guard.consecutive_failures,
     })
 }
+
+fn user_store(app: &AppHandle) -> Result<tauri::State<'_, crate::user_store::UserStore>, String> {
+    app.try_state::<crate::user_store::UserStore>()
+        .ok_or_else(|| "UserStore 未初始化".to_string())
+}
+
+#[tauri::command]
+pub fn ensure_user_db(app: AppHandle) -> Result<crate::user_store::UserDbStatus, String> {
+    let store = user_store(&app)?;
+    store.status()
+}
+
+#[tauri::command]
+pub fn load_user_data(app: AppHandle) -> Result<crate::user_store::UserDataSnapshot, String> {
+    let store = user_store(&app)?;
+    store.load()
+}
+
+#[tauri::command]
+pub fn save_watchlist(app: AppHandle, items: Vec<Stock>) -> Result<(), String> {
+    let store = user_store(&app)?;
+    store.save_watchlist(&items)
+}
+
+#[tauri::command]
+pub fn save_strategy_map(
+    app: AppHandle,
+    map: std::collections::HashMap<String, strategy::StrategyCompose>,
+) -> Result<(), String> {
+    let store = user_store(&app)?;
+    store.save_strategy_map(&map)
+}
+
+#[tauri::command]
+pub fn save_user_settings(
+    app: AppHandle,
+    settings: crate::user_store::UserSettings,
+) -> Result<(), String> {
+    let store = user_store(&app)?;
+    store.save_settings(&settings)
+}
+
+#[tauri::command]
+pub fn save_monitor_rules(
+    app: AppHandle,
+    rules: Vec<crate::monitor::MonitorRule>,
+) -> Result<(), String> {
+    let store = user_store(&app)?;
+    store.save_monitor_rules(&rules)
+}
+
+#[tauri::command]
+pub fn save_monitor_alerts(
+    app: AppHandle,
+    alerts: Vec<crate::monitor::MonitorAlert>,
+) -> Result<(), String> {
+    let store = user_store(&app)?;
+    store.save_monitor_alerts(&alerts)
+}
+
+#[tauri::command]
+pub fn import_from_localstorage(
+    app: AppHandle,
+    payload: crate::user_store::LegacyLocalStoragePayload,
+) -> Result<crate::user_store::UserDataSnapshot, String> {
+    let store = user_store(&app)?;
+    store.import_from_localstorage(payload)
+}
+
+#[tauri::command]
+pub fn mark_localstorage_migrated(app: AppHandle) -> Result<(), String> {
+    let store = user_store(&app)?;
+    store.mark_localstorage_migrated()
+}
+
+#[tauri::command]
+pub fn export_user_data(app: AppHandle) -> Result<String, String> {
+    let store = user_store(&app)?;
+    store.export_json()
+}
+
+#[tauri::command]
+pub fn import_user_data(
+    app: AppHandle,
+    json: String,
+) -> Result<crate::user_store::UserDataSnapshot, String> {
+    let store = user_store(&app)?;
+    store.import_json(&json)
+}

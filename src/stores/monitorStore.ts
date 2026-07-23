@@ -10,68 +10,17 @@ import {
   stopService,
 } from "tauri-plugin-background-service";
 import { monitorSyncConfig } from "@/services/api";
+import {
+  saveMonitorAlerts,
+  saveMonitorRules,
+  saveUserSettings,
+  saveWatchlist as persistWatchlist,
+} from "@/services/userPersistence";
 import type { AlertCondition, MonitorAlert, MonitorQuoteEvent, MonitorRule, Stock } from "@/types";
 import { useStockStore } from "@/stores/stockStore";
 
-const RULES_KEY = "monitor_rules_v1";
-const ALERTS_KEY = "monitor_alerts_v1";
-const ENABLED_KEY = "monitor_enabled_v1";
 const MAX_ALERTS = 50;
 const INTERVAL_SECS = 15;
-
-function loadRules(): MonitorRule[] {
-  try {
-    const raw = localStorage.getItem(RULES_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as MonitorRule[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveRules(rules: MonitorRule[]) {
-  try {
-    localStorage.setItem(RULES_KEY, JSON.stringify(rules));
-  } catch {
-    /* ignore */
-  }
-}
-
-function loadAlerts(): MonitorAlert[] {
-  try {
-    const raw = localStorage.getItem(ALERTS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as MonitorAlert[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveAlerts(alerts: MonitorAlert[]) {
-  try {
-    localStorage.setItem(ALERTS_KEY, JSON.stringify(alerts.slice(0, MAX_ALERTS)));
-  } catch {
-    /* ignore */
-  }
-}
-
-function loadWantEnabled(): boolean {
-  try {
-    return localStorage.getItem(ENABLED_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function saveWantEnabled(v: boolean) {
-  try {
-    localStorage.setItem(ENABLED_KEY, v ? "1" : "0");
-  } catch {
-    /* ignore */
-  }
-}
 
 function newRuleId() {
   return `r-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -80,6 +29,7 @@ function newRuleId() {
 type MonitorState = {
   rules: MonitorRule[];
   alerts: MonitorAlert[];
+  wantEnabled: boolean;
   running: boolean;
   starting: boolean;
   error: string | null;
@@ -110,8 +60,9 @@ export function conditionSummary(c: AlertCondition): string {
 }
 
 export const useMonitorStore = create<MonitorState>((set, get) => ({
-  rules: loadRules(),
-  alerts: loadAlerts(),
+  rules: [],
+  alerts: [],
+  wantEnabled: false,
   running: false,
   starting: false,
   error: null,
@@ -124,7 +75,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       await listen<MonitorAlert>("monitor-alert", (ev) => {
         const alert = ev.payload;
         const next = [alert, ...get().alerts].slice(0, MAX_ALERTS);
-        saveAlerts(next);
+        void saveMonitorAlerts(next);
         set({ alerts: next });
       }),
     );
@@ -148,11 +99,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         });
         if (changed) {
           useStockStore.setState({ watchlist: next });
-          try {
-            localStorage.setItem("watchlist_v2", JSON.stringify(next));
-          } catch {
-            /* ignore */
-          }
+          void persistWatchlist(next);
         }
       }),
     );
@@ -162,7 +109,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     try {
       const running = await isServiceRunning();
       set({ running });
-      if (loadWantEnabled() && !running) {
+      if (get().wantEnabled && !running) {
         void get().setMonitoring(true);
       }
     } catch {
@@ -170,7 +117,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     }
   },
 
-  upsertRule: ( partial) => {
+  upsertRule: (partial) => {
     const rules = [...get().rules];
     const now = new Date().toISOString();
     if (partial.id) {
@@ -201,14 +148,14 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         created_at: now,
       });
     }
-    saveRules(rules);
+    void saveMonitorRules(rules);
     set({ rules });
     void get().syncAndMaybeRestart();
   },
 
   removeRule: (id) => {
     const rules = get().rules.filter((r) => r.id !== id);
-    saveRules(rules);
+    void saveMonitorRules(rules);
     set({ rules });
     void get().syncAndMaybeRestart();
   },
@@ -216,7 +163,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   rulesForCode: (code) => get().rules.filter((r) => r.code === code),
 
   clearAlerts: () => {
-    saveAlerts([]);
+    void saveMonitorAlerts([]);
     set({ alerts: [] });
   },
 
@@ -235,14 +182,14 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   },
 
   syncAndMaybeRestart: async () => {
-    const { rules, running } = get();
+    const { rules, running, wantEnabled } = get();
     const stocks: Stock[] = useStockStore.getState().watchlist;
     try {
       await monitorSyncConfig({
         stocks,
         rules,
         interval_secs: INTERVAL_SECS,
-        enabled: running || loadWantEnabled(),
+        enabled: running || wantEnabled,
       });
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
@@ -281,8 +228,8 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
           serviceLabel: "以太测 · 盯盘中",
           foregroundServiceType: "dataSync",
         });
-        saveWantEnabled(true);
-        set({ running: true, starting: false });
+        void saveUserSettings({ monitorEnabled: true });
+        set({ running: true, wantEnabled: true, starting: false });
       } else {
         try {
           await stopService();
@@ -295,8 +242,8 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
           interval_secs: INTERVAL_SECS,
           enabled: false,
         });
-        saveWantEnabled(false);
-        set({ running: false, starting: false });
+        void saveUserSettings({ monitorEnabled: false });
+        set({ running: false, wantEnabled: false, starting: false });
       }
     } catch (e) {
       set({
@@ -304,7 +251,8 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         starting: false,
         running: false,
       });
-      saveWantEnabled(false);
+      void saveUserSettings({ monitorEnabled: false });
+      set({ wantEnabled: false });
     }
   },
 }));
