@@ -1,159 +1,236 @@
 import { motion } from "framer-motion";
-import { useMemo, useRef, useState, useEffect } from "react";
-import { formatPrice } from "@/lib/utils";
-import type { BsMarker, DailyBar } from "@/types";
+import { useEffect, useRef } from "react";
+import {
+  dispose,
+  init,
+  registerOverlay,
+  type Chart,
+  type DeepPartial,
+  type Styles,
+} from "klinecharts";
+import { cn, formatPrice } from "@/lib/utils";
+import {
+  dailyBarsToKLineData,
+  KLINE_PERIOD_OPTIONS,
+  periodSubtitle,
+} from "@/lib/klineData";
+import type { BsMarker, DailyBar, KlinePeriod } from "@/types";
 
 interface Props {
   bars: DailyBar[];
   markers?: BsMarker[];
   loading?: boolean;
+  period: KlinePeriod;
+  onPeriodChange: (period: KlinePeriod) => void;
 }
 
-function formatDateLabel(date: string) {
-  const parts = date.split("-");
-  if (parts.length === 3) return `${parts[1]}-${parts[2]}`;
-  return date;
+const UP = "#f87171";
+const DOWN = "#34d399";
+const BS_OVERLAY = "bsMarker";
+let bsOverlayRegistered = false;
+
+function ensureBsOverlay() {
+  if (bsOverlayRegistered) return;
+  bsOverlayRegistered = true;
+  registerOverlay({
+    name: BS_OVERLAY,
+    totalStep: 1,
+    needDefaultPointFigure: false,
+    createPointFigures: ({ coordinates, overlay }) => {
+      const kind = overlay.extendData as "buy" | "sell";
+      const isBuy = kind === "buy";
+      const { x, y } = coordinates[0];
+      return [
+        {
+          type: "text",
+          attrs: {
+            x,
+            y: isBuy ? y + 12 : y - 4,
+            text: isBuy ? "B" : "S",
+            align: "center",
+            baseline: isBuy ? "top" : "bottom",
+          },
+          styles: {
+            color: isBuy ? UP : DOWN,
+            size: 11,
+            weight: 700,
+          },
+          ignoreEvent: true,
+        },
+      ];
+    },
+  });
 }
 
-function ChartTooltip({
-  bar,
-  marker,
-  x,
-  containerWidth,
-}: {
-  bar: DailyBar;
-  marker?: BsMarker;
-  x: number;
-  containerWidth: number;
-}) {
-  const up = bar.close >= bar.open;
-  const left = Math.min(Math.max(x - 70, 8), Math.max(containerWidth - 150, 8));
-
-  return (
-    <div
-      className="pointer-events-none absolute top-2 z-10 rounded-lg border border-white/10 bg-slate-900/95 px-3 py-2 text-xs shadow-xl backdrop-blur-sm"
-      style={{ left }}
-    >
-      <div className="text-slate-400">{bar.date}</div>
-      <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 font-mono text-slate-200">
-        <span className="text-slate-500">开</span>
-        <span>¥{formatPrice(bar.open)}</span>
-        <span className="text-slate-500">收</span>
-        <span className={up ? "text-rose-400" : "text-emerald-400"}>
-          ¥{formatPrice(bar.close)}
-        </span>
-        <span className="text-slate-500">高</span>
-        <span>¥{formatPrice(bar.high)}</span>
-        <span className="text-slate-500">低</span>
-        <span>¥{formatPrice(bar.low)}</span>
-      </div>
-      {marker && (
-        <div
-          className={
-            marker.kind === "buy"
-              ? "mt-1.5 text-rose-400"
-              : "mt-1.5 text-emerald-400"
-          }
-        >
-          {marker.kind === "buy" ? "买入 B（MACD 金叉）" : "卖出 S（MACD 死叉）"}
-        </div>
-      )}
-    </div>
-  );
+function chartStyles(): DeepPartial<Styles> {
+  return {
+    grid: {
+      horizontal: {
+        color: "rgba(255,255,255,0.04)",
+      },
+      vertical: {
+        color: "rgba(255,255,255,0.03)",
+      },
+    },
+    candle: {
+      bar: {
+        upColor: UP,
+        downColor: DOWN,
+        noChangeColor: "#94a3b8",
+        upBorderColor: UP,
+        downBorderColor: DOWN,
+        noChangeBorderColor: "#94a3b8",
+        upWickColor: UP,
+        downWickColor: DOWN,
+        noChangeWickColor: "#94a3b8",
+      },
+      tooltip: {
+        text: {
+          color: "#e2e8f0",
+        },
+      },
+      priceMark: {
+        high: { color: "#94a3b8" },
+        low: { color: "#94a3b8" },
+        last: {
+          upColor: UP,
+          downColor: DOWN,
+          noChangeColor: "#94a3b8",
+        },
+      },
+    },
+    indicator: {
+      ohlc: {
+        upColor: UP,
+        downColor: DOWN,
+        noChangeColor: "#94a3b8",
+      },
+      bars: [
+        {
+          upColor: "rgba(248,113,113,0.55)",
+          downColor: "rgba(52,211,153,0.55)",
+          noChangeColor: "rgba(148,163,184,0.45)",
+        },
+      ],
+      tooltip: {
+        text: { color: "#cbd5e1" },
+      },
+    },
+    xAxis: {
+      axisLine: { color: "rgba(255,255,255,0.08)" },
+      tickLine: { color: "rgba(255,255,255,0.08)" },
+      tickText: { color: "#64748b" },
+    },
+    yAxis: {
+      axisLine: { color: "rgba(255,255,255,0.08)" },
+      tickLine: { color: "rgba(255,255,255,0.08)" },
+      tickText: { color: "#64748b" },
+    },
+    separator: {
+      color: "rgba(255,255,255,0.08)",
+      activeBackgroundColor: "rgba(148,163,184,0.25)",
+    },
+    crosshair: {
+      horizontal: {
+        line: { color: "rgba(255,255,255,0.2)" },
+        text: { backgroundColor: "#1e293b", color: "#e2e8f0" },
+      },
+      vertical: {
+        line: { color: "rgba(255,255,255,0.2)" },
+        text: { backgroundColor: "#1e293b", color: "#e2e8f0" },
+      },
+    },
+  };
 }
 
-export function KlineChart({ bars, markers = [], loading }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+function applyBsMarkers(chart: Chart, bars: DailyBar[], markers: BsMarker[]) {
+  chart.removeOverlay({ name: BS_OVERLAY });
+  if (markers.length === 0) return;
+
+  const byDate = new Map(bars.map((b) => [b.date, b]));
+  ensureBsOverlay();
+
+  for (const m of markers) {
+    const bar = byDate.get(m.date);
+    if (!bar) continue;
+    const data = dailyBarsToKLineData([bar])[0];
+    if (!data) continue;
+    chart.createOverlay({
+      name: BS_OVERLAY,
+      groupId: BS_OVERLAY,
+      lock: true,
+      points: [
+        {
+          timestamp: data.timestamp,
+          value: m.kind === "buy" ? bar.low : bar.high,
+        },
+      ],
+      extendData: m.kind,
+    });
+  }
+}
+
+export function KlineChart({
+  bars,
+  markers = [],
+  loading,
+  period,
+  onPeriodChange,
+}: Props) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<Chart | null>(null);
+  const latest = bars[bars.length - 1];
+  const showMarkers = period === "day" && markers.length > 0;
 
   useEffect(() => {
-    const el = containerRef.current;
+    const el = hostRef.current;
     if (!el) return;
 
-    const update = () => {
-      const next = Math.floor(el.getBoundingClientRect().width);
-      if (next > 0) setWidth(next);
-    };
+    ensureBsOverlay();
+    const chart = init(el);
+    if (!chart) return;
+    chartRef.current = chart;
 
-    update();
-    requestAnimationFrame(update);
+    chart.setTimezone("Asia/Shanghai");
+    chart.setStyles(chartStyles());
+    chart.setZoomEnabled(true);
+    chart.setScrollEnabled(true);
+    chart.setPriceVolumePrecision(2, 0);
 
-    const observer = new ResizeObserver(() => update());
-    observer.observe(el);
-    window.addEventListener("resize", update);
+    chart.createIndicator(
+      { name: "MA", calcParams: [5, 10, 20], shortName: "MA" },
+      true,
+      { id: "candle_pane" },
+    );
+    chart.createIndicator("VOL", false, { height: 72, dragEnabled: true });
+    chart.createIndicator("MACD", false, { height: 80, dragEnabled: true });
+    chart.createIndicator("RSI", false, { height: 72, dragEnabled: true });
+
+    const ro = new ResizeObserver(() => {
+      chart.resize();
+    });
+    ro.observe(el);
+
     return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", update);
+      ro.disconnect();
+      dispose(chart);
+      chartRef.current = null;
     };
-  }, [loading, bars.length]);
+  }, []);
 
-  const latest = bars[bars.length - 1];
-  const chartWidth = width > 0 ? width : 640;
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || loading) return;
 
-  const markerByDate = useMemo(() => {
-    const map = new Map<string, BsMarker>();
-    for (const m of markers) map.set(m.date, m);
-    return map;
-  }, [markers]);
-
-  const layout = useMemo(() => {
-    if (bars.length === 0) return null;
-
-    const height = 260;
-    const pad = { top: 28, right: 12, bottom: 36, left: 52 };
-    const plotW = Math.max(chartWidth - pad.left - pad.right, 1);
-    const plotH = height - pad.top - pad.bottom;
-
-    const min = Math.min(...bars.map((b) => b.low));
-    const max = Math.max(...bars.map((b) => b.high));
-    const span = Math.max(max - min, 0.01);
-    const padY = span * 0.06;
-    const yMin = min - padY;
-    const yMax = max + padY;
-
-    const yScale = (price: number) =>
-      pad.top + ((yMax - price) / (yMax - yMin)) * plotH;
-
-    const slot = plotW / bars.length;
-    const bodyW = Math.max(2, Math.min(10, slot * 0.55));
-
-    const candles = bars.map((bar, i) => {
-      const cx = pad.left + slot * i + slot / 2;
-      const yOpen = yScale(bar.open);
-      const yClose = yScale(bar.close);
-      const up = bar.close >= bar.open;
-      const marker = markerByDate.get(bar.date);
-      return {
-        bar,
-        cx,
-        yHigh: yScale(bar.high),
-        yLow: yScale(bar.low),
-        bodyTop: Math.min(yOpen, yClose),
-        bodyH: Math.max(Math.abs(yClose - yOpen), 1),
-        up,
-        color: up ? "#f87171" : "#34d399",
-        marker,
-      };
+    const data = dailyBarsToKLineData(bars);
+    chart.applyNewData(data, false, () => {
+      if (period === "day") {
+        applyBsMarkers(chart, bars, markers);
+      } else {
+        chart.removeOverlay({ name: BS_OVERLAY });
+      }
     });
-
-    const ticks = 4;
-    const yTicks = Array.from({ length: ticks + 1 }, (_, i) => {
-      const price = yMin + ((yMax - yMin) * i) / ticks;
-      return { price, y: yScale(price) };
-    });
-
-    const xTickStep = Math.max(1, Math.floor(bars.length / 6));
-    const xTicks = bars
-      .map((bar, i) => ({
-        label: formatDateLabel(bar.date),
-        x: pad.left + slot * i + slot / 2,
-        i,
-      }))
-      .filter((t) => t.i % xTickStep === 0 || t.i === bars.length - 1);
-
-    return { height, pad, candles, yTicks, xTicks, slot, bodyW };
-  }, [bars, chartWidth, markerByDate]);
+  }, [bars, markers, period, loading]);
 
   return (
     <motion.div
@@ -161,159 +238,67 @@ export function KlineChart({ bars, markers = [], loading }: Props) {
       animate={{ opacity: 1, y: 0 }}
       className="rounded-2xl border border-white/5 bg-slate-900/50 p-5 backdrop-blur-sm"
     >
-      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h3 className="text-base font-semibold text-slate-100">日 K 走势</h3>
+          <h3 className="text-base font-semibold text-slate-100">K 线形态</h3>
           <p className="mt-1 text-xs text-slate-500">
-            近 {bars.length} 个交易日 · 前复权日线
-            {markers.length > 0 ? " · MACD 金叉/死叉 B/S" : ""}
+            {bars.length > 0 ? `${bars.length} 根 · ` : ""}
+            {periodSubtitle(period)}
+            {showMarkers ? " · MACD 金叉/死叉 B/S" : ""}
+            {" · 滚轮/双指缩放"}
           </p>
         </div>
-        {latest && (
-          <div className="text-right">
-            <div className="font-mono text-lg font-bold tabular-nums text-slate-100">
-              ¥{formatPrice(latest.close)}
+        <div className="flex flex-wrap items-center gap-2">
+          {latest && (
+            <div className="mr-1 text-right">
+              <div className="font-mono text-lg font-bold tabular-nums text-slate-100">
+                ¥{formatPrice(latest.close)}
+              </div>
+              <div className="text-xs text-slate-500">{latest.date}</div>
             </div>
-            <div className="text-xs text-slate-500">最新收盘 {latest.date}</div>
-          </div>
-        )}
+          )}
+          <button
+            type="button"
+            title="复位到最新"
+            onClick={() => chartRef.current?.scrollToRealTime()}
+            className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-slate-400 hover:bg-white/5 hover:text-slate-200"
+          >
+            复位
+          </button>
+        </div>
       </div>
 
-      {/* 始终存在，保证 ResizeObserver 能量到真实宽度 */}
-      <div ref={containerRef} className="relative w-full min-h-64">
-        {loading ? (
-          <div className="animate-shimmer h-64 w-full rounded-xl" />
-        ) : bars.length === 0 || !layout ? (
-          <div className="flex h-64 items-center justify-center text-sm text-slate-500">
+      <div className="mb-3 flex flex-wrap gap-1">
+        {KLINE_PERIOD_OPTIONS.map((opt) => (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => onPeriodChange(opt.value)}
+            className={cn(
+              "rounded-md px-2 py-1 text-[11px] font-medium transition-colors",
+              period === opt.value
+                ? "bg-sky-500/20 text-sky-300"
+                : "bg-white/5 text-slate-400 hover:bg-white/10 hover:text-slate-200",
+            )}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="relative w-full">
+        {loading && (
+          <div className="absolute inset-0 z-10 animate-shimmer rounded-xl bg-slate-800/40" />
+        )}
+        {!loading && bars.length === 0 && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-slate-900/80 text-sm text-slate-500">
             暂无 K 线数据
           </div>
-        ) : (
-          <div
-            className="relative w-full"
-            onMouseLeave={() => setHoverIndex(null)}
-          >
-            {hoverIndex != null && layout.candles[hoverIndex] && (
-              <ChartTooltip
-                bar={layout.candles[hoverIndex].bar}
-                marker={layout.candles[hoverIndex].marker}
-                x={layout.candles[hoverIndex].cx}
-                containerWidth={chartWidth}
-              />
-            )}
-
-            <svg
-              width="100%"
-              height={layout.height}
-              viewBox={`0 0 ${chartWidth} ${layout.height}`}
-              preserveAspectRatio="xMidYMid meet"
-              className="block w-full"
-              onMouseMove={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                const ratio = chartWidth / Math.max(rect.width, 1);
-                const x = (e.clientX - rect.left) * ratio;
-                const idx = Math.min(
-                  bars.length - 1,
-                  Math.max(0, Math.floor((x - layout.pad.left) / layout.slot)),
-                );
-                if (x >= layout.pad.left && x <= chartWidth - layout.pad.right) {
-                  setHoverIndex(idx);
-                } else {
-                  setHoverIndex(null);
-                }
-              }}
-            >
-              {layout.yTicks.map((tick) => (
-                <g key={tick.price}>
-                  <line
-                    x1={layout.pad.left}
-                    x2={chartWidth - layout.pad.right}
-                    y1={tick.y}
-                    y2={tick.y}
-                    stroke="rgba(255,255,255,0.04)"
-                    strokeDasharray="3 3"
-                  />
-                  <text
-                    x={layout.pad.left - 8}
-                    y={tick.y + 3}
-                    textAnchor="end"
-                    fill="#64748b"
-                    fontSize={10}
-                  >
-                    {tick.price.toFixed(tick.price >= 100 ? 0 : 1)}
-                  </text>
-                </g>
-              ))}
-
-              {layout.xTicks.map((tick) => (
-                <text
-                  key={`${tick.label}-${tick.i}`}
-                  x={tick.x}
-                  y={layout.height - 8}
-                  textAnchor="middle"
-                  fill="#64748b"
-                  fontSize={10}
-                >
-                  {tick.label}
-                </text>
-              ))}
-
-              {layout.candles.map((c, i) => (
-                <g key={c.bar.date}>
-                  <line
-                    x1={c.cx}
-                    x2={c.cx}
-                    y1={c.yHigh}
-                    y2={c.yLow}
-                    stroke={c.color}
-                    strokeWidth={1}
-                  />
-                  <rect
-                    x={c.cx - layout.bodyW / 2}
-                    y={c.bodyTop}
-                    width={layout.bodyW}
-                    height={c.bodyH}
-                    fill={c.color}
-                    stroke={c.color}
-                  />
-                  {c.marker?.kind === "buy" && (
-                    <text
-                      x={c.cx}
-                      y={c.yLow + 14}
-                      textAnchor="middle"
-                      fill="#f87171"
-                      fontSize={11}
-                      fontWeight={700}
-                    >
-                      B
-                    </text>
-                  )}
-                  {c.marker?.kind === "sell" && (
-                    <text
-                      x={c.cx}
-                      y={c.yHigh - 4}
-                      textAnchor="middle"
-                      fill="#34d399"
-                      fontSize={11}
-                      fontWeight={700}
-                    >
-                      S
-                    </text>
-                  )}
-                  {hoverIndex === i && (
-                    <line
-                      x1={c.cx}
-                      x2={c.cx}
-                      y1={layout.pad.top}
-                      y2={layout.height - layout.pad.bottom}
-                      stroke="rgba(255,255,255,0.15)"
-                      strokeDasharray="2 2"
-                    />
-                  )}
-                </g>
-              ))}
-            </svg>
-          </div>
         )}
+        <div
+          ref={hostRef}
+          className="h-[420px] w-full touch-none overscroll-contain"
+        />
       </div>
     </motion.div>
   );

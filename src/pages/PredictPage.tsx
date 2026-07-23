@@ -37,6 +37,8 @@ export function PredictPage() {
   const selectedStock = useStockStore((s) => s.selectedStock);
   const prediction = useStockStore((s) => s.prediction);
   const klines = useStockStore((s) => s.klines);
+  const klinePeriod = useStockStore((s) => s.klinePeriod);
+  const setKlinePeriod = useStockStore((s) => s.setKlinePeriod);
   const bsMarkers = useStockStore((s) => s.bsMarkers);
   const backtest = useStockStore((s) => s.backtest);
   const predicting = useStockStore((s) => s.predicting);
@@ -350,6 +352,8 @@ export function PredictPage() {
                 bars={klines}
                 markers={bsMarkers}
                 loading={loadingKlines}
+                period={klinePeriod}
+                onPeriodChange={setKlinePeriod}
               />
               <BacktestPanel result={backtest} loading={loadingBacktest} />
 

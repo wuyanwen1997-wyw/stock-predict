@@ -29,7 +29,7 @@
 | `sentiment` | 标的画像 + 标题 → 情绪分（含词表/宽基权重 JSON） |
 | `capital` | `CapitalFlowArchive` + 日期 → 资金流方向强度 |
 | `backtest` | 预测 vs 实际 → `HitCounters` / 出手线 / 命中率口径 |
-| `bs_markers` | K 线 → MACD 金叉/死叉 B/S（主图叠加，不进融合） |
+| `bs_markers` | K 线 → MACD 金叉/死叉 B/S（主图叠加，不进融合）；设计见 [K线买卖点设计说明](../K线买卖点设计说明.md) |
 
 ## 兼容门面（旧路径仍可用）
 
