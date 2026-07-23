@@ -1,6 +1,6 @@
 [package]
 name = "stock-predict"
-version = "0.1.3"
+version = "1.0.0"
 description = "Stock prediction desktop app built with Tauri"
 authors = ["you"]
 edition = "2021"
