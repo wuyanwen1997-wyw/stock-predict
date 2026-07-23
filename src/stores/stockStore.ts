@@ -3,17 +3,20 @@ import {
   analyzeStock,
   defaultScreenCompose,
   defaultStrategyCompose,
+  getStockKlines,
   listAlgorithms,
   listStrategySources,
   loadStocks,
   runSmartScreen,
   searchStocks,
 } from "@/services/api";
+import { chartBarLimit } from "@/lib/klineData";
 import type {
   AlgorithmInfo,
   BacktestResult,
   BsMarker,
   DailyBar,
+  KlinePeriod,
   PredictionResult,
   ScreenFilters,
   ScreenHit,
@@ -231,6 +234,8 @@ interface StockState {
   horizonDays: number;
   prediction: PredictionResult | null;
   klines: DailyBar[];
+  /** 形态图周期（与预测回看解耦） */
+  klinePeriod: KlinePeriod;
   /** MACD 金叉/死叉主图标记 */
   bsMarkers: BsMarker[];
   backtest: BacktestResult | null;
@@ -241,11 +246,14 @@ interface StockState {
   loadingBacktest: boolean;
   error: string;
   analysisSeq: number;
+  chartSeq: number;
 
   init: () => Promise<void>;
   selectStock: (stock: Stock) => void;
   setAlgorithm: (id: string) => void;
   setLookbackDays: (days: number) => void;
+  setKlinePeriod: (period: KlinePeriod) => void;
+  loadChartKlines: () => Promise<void>;
   setPredictMode: (mode: PredictMode) => void;
   setHorizonDays: (days: number) => void;
   getComposeForStock: (code: string) => StrategyCompose;
@@ -302,6 +310,7 @@ export const useStockStore = create<StockState>((set, get) => ({
   horizonDays: loadHorizonDays(loadPredictMode()),
   prediction: null,
   klines: [],
+  klinePeriod: "day",
   bsMarkers: [],
   backtest: null,
   watchlist: [],
@@ -311,6 +320,7 @@ export const useStockStore = create<StockState>((set, get) => ({
   loadingBacktest: false,
   error: "",
   analysisSeq: 0,
+  chartSeq: 0,
 
   screenUniverse: "mixed",
   screenFilters: { ...DEFAULT_SCREEN_FILTERS },
@@ -409,11 +419,40 @@ export const useStockStore = create<StockState>((set, get) => ({
       selectedStock: stock,
       prediction: null,
       klines: [],
+      klinePeriod: "day",
       bsMarkers: [],
       backtest: null,
       lookbackDays: compose.lookback_days,
     });
     void get().runPrediction();
+  },
+
+  setKlinePeriod: (period) => {
+    if (get().klinePeriod === period) return;
+    set({ klinePeriod: period });
+    void get().loadChartKlines();
+  },
+
+  loadChartKlines: async () => {
+    const { selectedStock, klinePeriod, lookbackDays } = get();
+    if (!selectedStock) return;
+
+    const seq = get().chartSeq + 1;
+    set({ chartSeq: seq, loadingKlines: true });
+
+    try {
+      const limit = chartBarLimit(klinePeriod, lookbackDays);
+      const bars = await getStockKlines(selectedStock, limit, klinePeriod);
+      if (get().chartSeq !== seq) return;
+      set({ klines: bars, loadingKlines: false });
+    } catch (err) {
+      if (get().chartSeq !== seq) return;
+      set({
+        error: `加载 K 线失败: ${String(err)}`,
+        loadingKlines: false,
+        klines: [],
+      });
+    }
   },
 
   setAlgorithm: (id) => {
@@ -553,13 +592,18 @@ export const useStockStore = create<StockState>((set, get) => ({
 
       set({
         prediction: result.prediction,
-        klines: result.klines,
         bsMarkers: result.bs_markers ?? [],
         backtest: result.backtest,
         predicting: false,
-        loadingKlines: false,
         loadingBacktest: false,
       });
+
+      // 日 K 与预测窗口对齐，直接用分析结果；其它周期独立拉取
+      if (get().klinePeriod === "day") {
+        set({ klines: result.klines, loadingKlines: false });
+      } else {
+        void get().loadChartKlines();
+      }
     } catch (err) {
       if (get().analysisSeq !== seq) return;
       set({
