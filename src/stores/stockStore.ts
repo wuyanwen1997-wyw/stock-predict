@@ -10,6 +10,13 @@ import {
   runSmartScreen,
   searchStocks,
 } from "@/services/api";
+import {
+  bootstrapUserPersistence,
+  saveStrategyMap as persistStrategyMap,
+  saveUserSettings,
+  saveWatchlist as persistWatchlist,
+  type UserDataSnapshot,
+} from "@/services/userPersistence";
 import { chartBarLimit } from "@/lib/klineData";
 import type {
   AlgorithmInfo,
@@ -27,11 +34,7 @@ import type {
   StrategyCompose,
   StrategySourceInfo,
 } from "@/types";
-
-const STRATEGY_MAP_KEY = "strategy_compose_by_stock_v1";
-const PREDICT_MODE_KEY = "predict_mode_v1";
-const PREDICT_HORIZON_KEY = "predict_horizon_days_v1";
-const SCREEN_COMPOSE_KEY = "screen_compose_v1";
+import { useMonitorStore } from "@/stores/monitorStore";
 
 export type PredictMode = "daily" | "trend";
 
@@ -43,58 +46,32 @@ const DEFAULT_SCREEN_FILTERS: ScreenFilters = {
   main_board_only: false,
 };
 
-function loadScreenCompose(): StrategyCompose | null {
-  try {
-    const raw = localStorage.getItem(SCREEN_COMPOSE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as unknown;
-    return isValidCompose(parsed) ? cloneCompose(parsed) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveScreenCompose(compose: StrategyCompose) {
-  try {
-    localStorage.setItem(SCREEN_COMPOSE_KEY, JSON.stringify(compose));
-  } catch {
-    /* ignore */
-  }
-}
-
 const TREND_HORIZONS = [2, 3, 4, 5] as const;
 
-function loadPredictMode(): PredictMode {
-  try {
-    const v = localStorage.getItem(PREDICT_MODE_KEY);
-    if (v === "trend" || v === "daily") return v;
-  } catch {
-    /* ignore */
-  }
-  return "daily";
-}
-
-function loadHorizonDays(mode: PredictMode): number {
-  try {
-    const n = Number(localStorage.getItem(PREDICT_HORIZON_KEY));
-    if (mode === "daily") return 1;
-    if (TREND_HORIZONS.includes(n as (typeof TREND_HORIZONS)[number])) return n;
-  } catch {
-    /* ignore */
-  }
-  return mode === "trend" ? 3 : 1;
-}
-
 function persistPredictPrefs(mode: PredictMode, horizonDays: number) {
-  try {
-    localStorage.setItem(PREDICT_MODE_KEY, mode);
-    // 只持久化多日跨度，避免切回单日时覆盖用户上次选的 2–5 日
-    if (mode === "trend" && horizonDays >= 2) {
-      localStorage.setItem(PREDICT_HORIZON_KEY, String(horizonDays));
-    }
-  } catch {
-    /* ignore */
-  }
+  void saveUserSettings({
+    predictMode: mode,
+    ...(mode === "trend" && horizonDays >= 2
+      ? { predictHorizonDays: horizonDays }
+      : {}),
+  });
+}
+
+function persistLookback(days: number) {
+  void saveUserSettings({ lookbackDays: days });
+}
+
+function persistScreenCompose(compose: StrategyCompose) {
+  void saveUserSettings({ screenCompose: compose });
+}
+
+function hydrateMonitor(snap: UserDataSnapshot | null | undefined) {
+  if (!snap) return;
+  useMonitorStore.setState({
+    rules: snap.monitorRules ?? [],
+    alerts: (snap.monitorAlerts ?? []).slice(0, 50),
+    wantEnabled: snap.settings?.monitorEnabled === true,
+  });
 }
 
 /** 统一用 6 位数字代码做存储键，避免 SH510980 / 510980 不一致 */
@@ -163,51 +140,19 @@ function mergeWithDefault(
   };
 }
 
-function loadStrategyMap(): Record<string, StrategyCompose> {
-  try {
-    const raw = localStorage.getItem(STRATEGY_MAP_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== "object") return {};
-
-    const out: Record<string, StrategyCompose> = {};
-    for (const [k, v] of Object.entries(parsed)) {
-      if (!isValidCompose(v)) continue;
-      const key = composeKey(k);
-      // 同一股票多种键时，后写覆盖前写；优先保留更完整的
-      if (!out[key] || v.sources.length >= out[key].sources.length) {
-        out[key] = cloneCompose(v);
-      }
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-/** 读盘合并后再写，避免内存 map 为空时覆盖掉其它股票配置 */
 function upsertStrategyCompose(
   code: string,
   compose: StrategyCompose,
   memoryMap: Record<string, StrategyCompose>,
 ): Record<string, StrategyCompose> {
   const key = composeKey(code);
-  const merged = {
-    ...loadStrategyMap(),
-    ...memoryMap,
-    [key]: cloneCompose(compose),
-  };
-  // 去掉未规范化的重复键
   const normalized: Record<string, StrategyCompose> = {};
-  for (const [k, v] of Object.entries(merged)) {
-    const nk = composeKey(k);
-    normalized[nk] = v;
+  for (const [k, v] of Object.entries({ ...memoryMap, [key]: cloneCompose(compose) })) {
+    normalized[composeKey(k)] = v;
   }
-  try {
-    localStorage.setItem(STRATEGY_MAP_KEY, JSON.stringify(normalized));
-  } catch (e) {
-    console.warn("保存信号组合失败", e);
-  }
+  void persistStrategyMap(normalized).catch((e) =>
+    console.warn("保存信号组合失败", e),
+  );
   return normalized;
 }
 
@@ -248,7 +193,13 @@ interface StockState {
   analysisSeq: number;
   chartSeq: number;
 
+  /** 预测页组合面板 UI */
+  composePanelOpen: boolean;
+  composePanelHeight: number;
+
   init: () => Promise<void>;
+  /** 设置页导入用户数据后刷新内存 */
+  applyUserSnapshot: (snap: UserDataSnapshot) => void;
   selectStock: (stock: Stock) => void;
   setAlgorithm: (id: string) => void;
   setLookbackDays: (days: number) => void;
@@ -291,6 +242,8 @@ interface StockState {
   resetScreenCompose: () => Promise<void>;
   runSmartScreen: () => Promise<void>;
   applyScreenHit: (hit: ScreenHit) => void;
+  setComposePanelOpen: (open: boolean) => void;
+  setComposePanelHeight: (h: number) => void;
 }
 
 export const useStockStore = create<StockState>((set, get) => ({
@@ -306,14 +259,16 @@ export const useStockStore = create<StockState>((set, get) => ({
   selectedStock: null,
   activeAlgorithm: "compose",
   lookbackDays: 50,
-  predictMode: loadPredictMode(),
-  horizonDays: loadHorizonDays(loadPredictMode()),
+  predictMode: "daily",
+  horizonDays: 1,
   prediction: null,
   klines: [],
   klinePeriod: "day",
   bsMarkers: [],
   backtest: null,
   watchlist: [],
+  composePanelOpen: true,
+  composePanelHeight: 232,
   loading: false,
   predicting: false,
   loadingKlines: false,
@@ -324,7 +279,7 @@ export const useStockStore = create<StockState>((set, get) => ({
 
   screenUniverse: "mixed",
   screenFilters: { ...DEFAULT_SCREEN_FILTERS },
-  screenCompose: loadScreenCompose(),
+  screenCompose: null,
   screenHorizonDays: 1,
   screenTopN: 20,
   screenResult: null,
@@ -334,6 +289,13 @@ export const useStockStore = create<StockState>((set, get) => ({
   init: async () => {
     set({ loading: true, error: "" });
     try {
+      let userSnap: UserDataSnapshot | null = null;
+      try {
+        userSnap = await bootstrapUserPersistence();
+      } catch (e) {
+        console.warn("[stock-predict] user persistence bootstrap failed:", e);
+      }
+
       const settled = await Promise.allSettled([
         loadStocks(),
         listAlgorithms(),
@@ -373,26 +335,46 @@ export const useStockStore = create<StockState>((set, get) => ({
         console.warn("[stock-predict] hot list warning:", hotWarning);
       }
 
-      let watchlist = loadWatchlist([...stocks, ...hotStocksFromApi]);
-      watchlist = await recoverLegacyWatchlist(watchlist);
-      const strategyMap = loadStrategyMap();
+      const known = [...stocks, ...hotStocksFromApi];
+      let watchlist = (userSnap?.watchlist ?? []).map((s) => enrichStock(s, known));
+      watchlist = await enrichSparseWatchlist(watchlist);
+      const strategyMap = normalizeStrategyMap(userSnap?.strategyMap ?? {});
+
+      const settings = userSnap?.settings ?? {};
+      let predictMode: PredictMode =
+        settings.predictMode === "trend" || settings.predictMode === "daily"
+          ? settings.predictMode
+          : "daily";
+      let horizonDays = 1;
+      if (predictMode === "trend") {
+        const n = settings.predictHorizonDays ?? 3;
+        horizonDays = TREND_HORIZONS.includes(n as (typeof TREND_HORIZONS)[number])
+          ? n
+          : 3;
+      }
+
+      const savedLookback = settings.lookbackDays;
+      let lookbackDays =
+        savedLookback && [25, 50, 60, 90, 120].includes(savedLookback)
+          ? savedLookback
+          : 50;
+
       const selectedStock =
         (hotStocksFromApi[0] ?? stocks.find((s) => s.is_hot) ?? stocks[0]) ?? null;
-
-      const savedLookback = Number(localStorage.getItem("lookbackDays"));
-      let lookbackDays = [25, 50, 60, 90, 120].includes(savedLookback) ? savedLookback : 50;
       if (selectedStock) {
         const saved = strategyMap[composeKey(selectedStock.code)];
         if (saved?.lookback_days) lookbackDays = saved.lookback_days;
       }
 
-      const existingScreen = get().screenCompose;
-      const screenCompose = existingScreen
-        ? mergeWithDefault(existingScreen, screenDefault, 50)
+      const savedScreen = settings.screenCompose;
+      const screenCompose = savedScreen
+        ? mergeWithDefault(savedScreen, screenDefault, 50)
         : screenDefault
           ? cloneCompose(screenDefault)
           : null;
-      if (screenCompose) saveScreenCompose(screenCompose);
+      if (screenCompose) persistScreenCompose(screenCompose);
+
+      hydrateMonitor(userSnap);
 
       set({
         stocks,
@@ -404,13 +386,61 @@ export const useStockStore = create<StockState>((set, get) => ({
         selectedStock,
         watchlist,
         lookbackDays,
+        predictMode,
+        horizonDays,
         screenCompose,
+        composePanelOpen: settings.predictComposeCollapsed === true ? false : true,
+        composePanelHeight:
+          typeof settings.predictComposeHeight === "number" &&
+          settings.predictComposeHeight >= 116 &&
+          settings.predictComposeHeight <= 464
+            ? settings.predictComposeHeight
+            : 232,
         loading: false,
         error: softErrors.length > 0 ? softErrors.join("；") : "",
       });
     } catch (err) {
       set({ error: String(err), loading: false });
     }
+  },
+
+  applyUserSnapshot: (snap) => {
+    const strategyMap = normalizeStrategyMap(snap.strategyMap ?? {});
+    const settings = snap.settings ?? {};
+    const predictMode: PredictMode =
+      settings.predictMode === "trend" || settings.predictMode === "daily"
+        ? settings.predictMode
+        : get().predictMode;
+    let horizonDays = get().horizonDays;
+    if (predictMode === "trend") {
+      const n = settings.predictHorizonDays ?? horizonDays;
+      horizonDays = TREND_HORIZONS.includes(n as (typeof TREND_HORIZONS)[number])
+        ? n
+        : 3;
+    } else {
+      horizonDays = 1;
+    }
+    const lookback =
+      settings.lookbackDays && [25, 50, 60, 90, 120].includes(settings.lookbackDays)
+        ? settings.lookbackDays
+        : get().lookbackDays;
+
+    hydrateMonitor(snap);
+    set({
+      watchlist: snap.watchlist ?? [],
+      strategyMap,
+      lookbackDays: lookback,
+      predictMode,
+      horizonDays,
+      screenCompose: settings.screenCompose
+        ? cloneCompose(settings.screenCompose)
+        : get().screenCompose,
+      composePanelOpen: settings.predictComposeCollapsed === true ? false : true,
+      composePanelHeight:
+        typeof settings.predictComposeHeight === "number"
+          ? settings.predictComposeHeight
+          : get().composePanelHeight,
+    });
   },
 
   selectStock: (stock) => {
@@ -461,7 +491,7 @@ export const useStockStore = create<StockState>((set, get) => ({
   },
 
   setLookbackDays: (days) => {
-    localStorage.setItem("lookbackDays", String(days));
+    persistLookback(days);
     set({ lookbackDays: days });
     if (get().selectedStock) {
       get().updateCompose({ lookback_days: days });
@@ -473,10 +503,7 @@ export const useStockStore = create<StockState>((set, get) => ({
     let horizonDays = 1;
     if (mode === "trend") {
       horizonDays =
-        prevHorizon >= 2 && prevHorizon <= 5
-          ? prevHorizon
-          : loadHorizonDays("trend");
-      if (horizonDays < 2) horizonDays = 3;
+        prevHorizon >= 2 && prevHorizon <= 5 ? prevHorizon : 3;
     }
     persistPredictPrefs(mode, horizonDays);
     set({ predictMode: mode, horizonDays });
@@ -495,7 +522,7 @@ export const useStockStore = create<StockState>((set, get) => ({
   getComposeForStock: (code) => {
     const { strategyMap, defaultCompose, lookbackDays } = get();
     const key = composeKey(code);
-    const saved = strategyMap[key] ?? loadStrategyMap()[key];
+    const saved = strategyMap[key];
     return mergeWithDefault(saved, defaultCompose, lookbackDays);
   },
 
@@ -556,7 +583,7 @@ export const useStockStore = create<StockState>((set, get) => ({
           strategyMap,
           lookbackDays: tuned.lookback_days,
         });
-        localStorage.setItem("lookbackDays", String(tuned.lookback_days));
+        persistLookback(tuned.lookback_days);
         void get().runPrediction();
       } catch (e) {
         set({ error: `应用调优组合失败: ${String(e)}` });
@@ -625,7 +652,7 @@ export const useStockStore = create<StockState>((set, get) => ({
     const next = exists
       ? get().watchlist.filter((s) => s.code !== stock.code)
       : [...get().watchlist, stock];
-    saveWatchlist(next);
+    void persistWatchlist(next).catch((e) => console.warn("保存自选失败", e));
     set({ watchlist: next });
   },
 
@@ -737,7 +764,7 @@ export const useStockStore = create<StockState>((set, get) => ({
       typeof patch === "function"
         ? patch(current)
         : { ...current, ...patch, sources: patch.sources ?? current.sources };
-    saveScreenCompose(next);
+    persistScreenCompose(next);
     set({ screenCompose: next });
   },
 
@@ -762,7 +789,7 @@ export const useStockStore = create<StockState>((set, get) => ({
   resetScreenCompose: async () => {
     try {
       const def = await defaultScreenCompose();
-      saveScreenCompose(def);
+      persistScreenCompose(def);
       set({ screenCompose: def });
     } catch (e) {
       set({ error: `重置选股组合失败: ${String(e)}` });
@@ -825,72 +852,65 @@ export const useStockStore = create<StockState>((set, get) => ({
   applyScreenHit: (hit) => {
     get().selectStock(hit.stock);
   },
+
+  setComposePanelOpen: (open) => {
+    set({ composePanelOpen: open });
+    void saveUserSettings({ predictComposeCollapsed: !open });
+  },
+
+  setComposePanelHeight: (h) => {
+    set({ composePanelHeight: h });
+    void saveUserSettings({ predictComposeHeight: h });
+  },
 }));
 
-const WATCHLIST_KEY = "watchlist_v2";
-const WATCHLIST_LEGACY_KEY = "watchlist";
-
-function loadWatchlist(known: Stock[]): Stock[] {
-  try {
-    const raw = localStorage.getItem(WATCHLIST_KEY) ?? localStorage.getItem(WATCHLIST_LEGACY_KEY);
-    if (!raw) return [];
-
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) return [];
-
-    if (typeof parsed[0] === "string") {
-      return (parsed as string[])
-        .map((code) => known.find((s) => s.code === code))
-        .filter((s): s is Stock => s != null);
-    }
-
-    return parsed as Stock[];
-  } catch {
-    return [];
+function normalizeStrategyMap(
+  map: Record<string, StrategyCompose>,
+): Record<string, StrategyCompose> {
+  const out: Record<string, StrategyCompose> = {};
+  for (const [k, v] of Object.entries(map)) {
+    if (!isValidCompose(v)) continue;
+    out[composeKey(k)] = cloneCompose(v);
   }
+  return out;
 }
 
-function saveWatchlist(items: Stock[]) {
-  localStorage.setItem(WATCHLIST_KEY, JSON.stringify(items));
+function enrichStock(s: Stock, known: Stock[]): Stock {
+  const hit = known.find((k) => k.code === s.code);
+  if (!hit) return s;
+  return {
+    ...s,
+    name: s.name && s.name !== s.code ? s.name : hit.name,
+    market: s.market || hit.market,
+    sector: s.sector || hit.sector,
+    price: s.price ?? hit.price,
+    change_pct: s.change_pct ?? hit.change_pct,
+  };
 }
 
-async function recoverLegacyWatchlist(current: Stock[]): Promise<Stock[]> {
-  try {
-    const raw = localStorage.getItem(WATCHLIST_LEGACY_KEY);
-    if (!raw) return current;
+/** 导入时仅有代码/名称占位的自选，尝试搜索补全。 */
+async function enrichSparseWatchlist(current: Stock[]): Promise<Stock[]> {
+  const sparse = current.filter(
+    (s) => !s.name || s.name === s.code || !s.market,
+  );
+  if (sparse.length === 0) return current;
 
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0 || typeof parsed[0] !== "string") {
-      return current;
+  const recovered: Stock[] = [];
+  for (const s of sparse) {
+    try {
+      const results = await searchStocks(s.code, 8);
+      const match = results.find((r) => r.code === s.code) ?? results[0];
+      if (match) recovered.push(match);
+    } catch {
+      /* ignore */
     }
-
-    const legacyCodes = parsed as string[];
-    const knownCodes = new Set(current.map((s) => s.code));
-    const missing = legacyCodes.filter((code) => !knownCodes.has(code));
-    if (missing.length === 0) return current;
-
-    const recovered: Stock[] = [];
-    for (const code of missing) {
-      try {
-        const results = await searchStocks(code, 8);
-        const match = results.find((s) => s.code === code) ?? results[0];
-        if (match) recovered.push(match);
-      } catch {
-        // ignore
-      }
-    }
-
-    if (recovered.length === 0) return current;
-
-    const merged = [...current];
-    for (const stock of recovered) {
-      if (!merged.some((s) => s.code === stock.code)) {
-        merged.push(stock);
-      }
-    }
-    saveWatchlist(merged);
-    return merged;
-  } catch {
-    return current;
   }
+  if (recovered.length === 0) return current;
+
+  const merged = current.map((s) => {
+    const r = recovered.find((x) => x.code === s.code);
+    return r ? { ...s, ...r } : s;
+  });
+  void persistWatchlist(merged).catch(() => undefined);
+  return merged;
 }

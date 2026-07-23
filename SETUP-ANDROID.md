@@ -144,7 +144,7 @@ npm run version:bump -- --auto --tag --push   # commit + tag + push → 触发 C
 | 热股 / 搜索 / 预测 | ✅ | ✅ |
 | 多信号策略组合 | ✅ | ✅ |
 | K 线 / 回测 | ✅ | ✅ |
-| 自选 / 策略本地存储 | ✅ | ✅（WebView localStorage） |
+| 自选 / 策略本地存储 | ✅ | ✅（`app_data_dir` SQLite，升级不丢） |
 | 内置 `stocks.json` | ✅ | ✅ |
 
 ## 常见问题

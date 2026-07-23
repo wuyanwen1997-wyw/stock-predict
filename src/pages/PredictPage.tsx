@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useRef, type PointerEvent as ReactPointerEvent } from "react";
 import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { BacktestPanel } from "@/components/BacktestPanel";
@@ -13,25 +13,12 @@ import { useStockStore } from "@/stores/stockStore";
 export const LOOKBACK_OPTIONS = [25, 50, 60, 90, 120] as const;
 export const TREND_HORIZON_OPTIONS = [2, 3, 4, 5] as const;
 
-const COMPOSE_COLLAPSED_KEY = "predict_compose_collapsed_v1";
-const COMPOSE_HEIGHT_KEY = "predict_compose_height_v1";
-
 /** Approx height of one compact compose row (with weight stepper). */
 const ROW_H = 58;
 const DEFAULT_VISIBLE = 4;
 const MIN_H = ROW_H * 2;
 const MAX_H = ROW_H * 8;
 const DEFAULT_H = ROW_H * DEFAULT_VISIBLE;
-
-function loadComposeHeight() {
-  try {
-    const n = Number(localStorage.getItem(COMPOSE_HEIGHT_KEY));
-    if (Number.isFinite(n) && n >= MIN_H && n <= MAX_H) return n;
-  } catch {
-    /* ignore */
-  }
-  return DEFAULT_H;
-}
 
 export function PredictPage() {
   const selectedStock = useStockStore((s) => s.selectedStock);
@@ -51,39 +38,19 @@ export function PredictPage() {
   const setPredictMode = useStockStore((s) => s.setPredictMode);
   const horizonDays = useStockStore((s) => s.horizonDays);
   const setHorizonDays = useStockStore((s) => s.setHorizonDays);
-  const runPrediction = useStockStore((s) => s.runPrediction);
   const watchlist = useStockStore((s) => s.watchlist);
   const toggleWatchlist = useStockStore((s) => s.toggleWatchlist);
+  const composeOpen = useStockStore((s) => s.composePanelOpen);
+  const setComposeOpen = useStockStore((s) => s.setComposePanelOpen);
+  const composeHeight = useStockStore((s) => s.composePanelHeight);
+  const setComposeHeight = useStockStore((s) => s.setComposePanelHeight);
+  const runPrediction = useStockStore((s) => s.runPrediction);
 
   const starred = selectedStock
     ? watchlist.some((s) => s.code === selectedStock.code)
     : false;
 
-  const [composeOpen, setComposeOpen] = useState(() => {
-    try {
-      return localStorage.getItem(COMPOSE_COLLAPSED_KEY) !== "1";
-    } catch {
-      return true;
-    }
-  });
-  const [composeHeight, setComposeHeight] = useState(loadComposeHeight);
   const resizeRef = useRef<{ startY: number; startH: number; pointerId: number } | null>(null);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(COMPOSE_COLLAPSED_KEY, composeOpen ? "0" : "1");
-    } catch {
-      /* ignore */
-    }
-  }, [composeOpen]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(COMPOSE_HEIGHT_KEY, String(composeHeight));
-    } catch {
-      /* ignore */
-    }
-  }, [composeHeight]);
 
   const onResizeDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -247,7 +214,7 @@ export function PredictPage() {
         <div className="flex items-center gap-2 border-t border-white/5 px-3 py-1.5">
           <button
             type="button"
-            onClick={() => setComposeOpen((v) => !v)}
+            onClick={() => setComposeOpen(!composeOpen)}
             className="flex min-w-0 flex-1 items-center gap-2 text-left"
           >
             <span className="text-xs font-medium text-slate-200">信号组合</span>
