@@ -14,7 +14,7 @@ import {
   KLINE_PERIOD_OPTIONS,
   periodSubtitle,
 } from "@/lib/klineData";
-import type { BsMarker, DailyBar, KlinePeriod } from "@/types";
+import type { BsMarker, ChartDensity, DailyBar, KlinePeriod } from "@/types";
 
 interface Props {
   bars: DailyBar[];
@@ -22,6 +22,11 @@ interface Props {
   loading?: boolean;
   period: KlinePeriod;
   onPeriodChange: (period: KlinePeriod) => void;
+  /** 窗格密度：精简 / 标准 / 完整 */
+  density?: ChartDensity;
+  /** 主图区域最小高度，如 max(280px, 45dvh) */
+  minHeight?: string;
+  compactHeader?: boolean;
 }
 
 const UP = "#f87171";
@@ -176,11 +181,15 @@ export function KlineChart({
   loading,
   period,
   onPeriodChange,
+  density = "standard",
+  minHeight,
+  compactHeader = false,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
   const latest = bars[bars.length - 1];
   const showMarkers = period === "day" && markers.length > 0;
+  const chartMinH = minHeight ?? "max(280px, 45dvh)";
 
   useEffect(() => {
     const el = hostRef.current;
@@ -202,9 +211,15 @@ export function KlineChart({
       true,
       { id: "candle_pane" },
     );
-    chart.createIndicator("VOL", false, { height: 72, dragEnabled: true });
-    chart.createIndicator("MACD", false, { height: 80, dragEnabled: true });
-    chart.createIndicator("RSI", false, { height: 72, dragEnabled: true });
+    if (density !== "compact") {
+      chart.createIndicator("VOL", false, { height: 72, dragEnabled: true });
+      chart.createIndicator("MACD", false, { height: 80, dragEnabled: true });
+    } else {
+      chart.createIndicator("MACD", false, { height: 64, dragEnabled: true });
+    }
+    if (density === "full") {
+      chart.createIndicator("RSI", false, { height: 72, dragEnabled: true });
+    }
 
     const ro = new ResizeObserver(() => {
       chart.resize();
@@ -216,7 +231,7 @@ export function KlineChart({
       dispose(chart);
       chartRef.current = null;
     };
-  }, []);
+  }, [density]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -236,37 +251,42 @@ export function KlineChart({
     <motion.div
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
-      className="rounded-2xl border border-white/5 bg-slate-900/50 p-5 backdrop-blur-sm"
+      className={cn(
+        "border border-white/5 bg-slate-900/50 backdrop-blur-sm",
+        compactHeader ? "rounded-xl p-3" : "rounded-2xl p-5",
+      )}
     >
-      <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h3 className="text-base font-semibold text-slate-100">K 线形态</h3>
-          <p className="mt-1 text-xs text-slate-500">
-            {bars.length > 0 ? `${bars.length} 根 · ` : ""}
-            {periodSubtitle(period)}
-            {showMarkers ? " · MACD 金叉/死叉 B/S" : ""}
-            {" · 滚轮/双指缩放"}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {latest && (
-            <div className="mr-1 text-right">
-              <div className="font-mono text-lg font-bold tabular-nums text-slate-100">
-                ¥{formatPrice(latest.close)}
+      {!compactHeader && (
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h3 className="text-base font-semibold text-slate-100">K 线形态</h3>
+            <p className="mt-1 text-xs text-slate-500">
+              {bars.length > 0 ? `${bars.length} 根 · ` : ""}
+              {periodSubtitle(period)}
+              {showMarkers ? " · MACD 金叉/死叉 B/S" : ""}
+              {" · 滚轮/双指缩放"}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {latest && (
+              <div className="mr-1 text-right">
+                <div className="font-mono text-lg font-bold tabular-nums text-slate-100">
+                  ¥{formatPrice(latest.close)}
+                </div>
+                <div className="text-xs text-slate-500">{latest.date}</div>
               </div>
-              <div className="text-xs text-slate-500">{latest.date}</div>
-            </div>
-          )}
-          <button
-            type="button"
-            title="复位到最新"
-            onClick={() => chartRef.current?.scrollToRealTime()}
-            className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-slate-400 hover:bg-white/5 hover:text-slate-200"
-          >
-            复位
-          </button>
+            )}
+            <button
+              type="button"
+              title="复位到最新"
+              onClick={() => chartRef.current?.scrollToRealTime()}
+              className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-slate-400 hover:bg-white/5 hover:text-slate-200"
+            >
+              复位
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="mb-3 flex flex-wrap gap-1">
         {KLINE_PERIOD_OPTIONS.map((opt) => (
@@ -284,6 +304,15 @@ export function KlineChart({
             {opt.label}
           </button>
         ))}
+        {compactHeader && (
+          <button
+            type="button"
+            onClick={() => chartRef.current?.scrollToRealTime()}
+            className="ml-auto rounded-md px-2 py-1 text-[11px] text-slate-400"
+          >
+            复位
+          </button>
+        )}
       </div>
 
       <div className="relative w-full">
@@ -297,7 +326,8 @@ export function KlineChart({
         )}
         <div
           ref={hostRef}
-          className="h-[420px] w-full touch-none overscroll-contain"
+          className="w-full touch-none overscroll-contain"
+          style={{ height: chartMinH, minHeight: 280 }}
         />
       </div>
     </motion.div>

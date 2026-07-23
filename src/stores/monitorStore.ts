@@ -16,11 +16,32 @@ import {
   saveUserSettings,
   saveWatchlist as persistWatchlist,
 } from "@/services/userPersistence";
+import {
+  GROUP_HOLDINGS_MIRROR,
+  GROUP_REMOVED,
+  stockFromPoolItem,
+} from "@/lib/pool";
 import type { AlertCondition, MonitorAlert, MonitorQuoteEvent, MonitorRule, Stock } from "@/types";
 import { useStockStore } from "@/stores/stockStore";
 
 const MAX_ALERTS = 50;
 const INTERVAL_SECS = 15;
+
+/** 盯盘标的：池内非剔除/非镜像；空则回退关注组 */
+function monitorUniverse(): Stock[] {
+  const { poolItems, watchlist } = useStockStore.getState();
+  const byCode = new Map<string, Stock>();
+  for (const item of poolItems) {
+    if (item.groupId === GROUP_REMOVED || item.groupId === GROUP_HOLDINGS_MIRROR) {
+      continue;
+    }
+    if (!byCode.has(item.code)) {
+      byCode.set(item.code, stockFromPoolItem(item));
+    }
+  }
+  if (byCode.size > 0) return [...byCode.values()];
+  return watchlist;
+}
 
 function newRuleId() {
   return `r-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -183,7 +204,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
 
   syncAndMaybeRestart: async () => {
     const { rules, running, wantEnabled } = get();
-    const stocks: Stock[] = useStockStore.getState().watchlist;
+    const stocks: Stock[] = monitorUniverse();
     try {
       await monitorSyncConfig({
         stocks,
@@ -211,9 +232,9 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
           return;
         }
 
-        const stocks = useStockStore.getState().watchlist;
+        const stocks = monitorUniverse();
         if (stocks.length === 0) {
-          set({ error: "请先添加自选股", starting: false });
+          set({ error: "请先在股票池添加标的", starting: false });
           return;
         }
 
@@ -237,7 +258,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
           /* already stopped */
         }
         await monitorSyncConfig({
-          stocks: useStockStore.getState().watchlist,
+          stocks: monitorUniverse(),
           rules: get().rules,
           interval_secs: INTERVAL_SECS,
           enabled: false,

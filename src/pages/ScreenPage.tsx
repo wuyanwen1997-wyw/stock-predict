@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { cn, formatPct, formatPrice, marketLabel } from "@/lib/utils";
 import { useStockStore } from "@/stores/stockStore";
 import type { ScreenHit, ScreenUniverse } from "@/types";
+import { AddToPoolModal } from "@/components/AddToPoolModal";
 
 const UNIVERSE_OPTIONS: { id: ScreenUniverse; label: string; hint: string }[] = [
   { id: "mixed", label: "综合池", hint: "人气榜∪自选∪种子" },
@@ -37,7 +38,6 @@ export function ScreenPage() {
   const resetScreenCompose = useStockStore((s) => s.resetScreenCompose);
   const runSmartScreen = useStockStore((s) => s.runSmartScreen);
   const applyScreenHit = useStockStore((s) => s.applyScreenHit);
-  const toggleWatchlist = useStockStore((s) => s.toggleWatchlist);
 
   const progressPct = useMemo(() => {
     if (!screenProgress.total) return 0;
@@ -51,10 +51,11 @@ export function ScreenPage() {
 
   const goPredict = (hit: ScreenHit) => {
     applyScreenHit(hit);
-    navigate("/predict");
+    navigate(`/stock/${hit.stock.code}`);
   };
 
   const isWatched = (code: string) => watchlist.some((s) => s.code === code);
+  const [poolHit, setPoolHit] = useState<ScreenHit | null>(null);
 
   return (
     <div className="h-full min-h-0 overflow-y-auto p-4 sm:p-6 lg:p-8">
@@ -391,14 +392,14 @@ export function ScreenPage() {
                       onClick={() => goPredict(hit)}
                       className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-200"
                     >
-                      预测
+                      诊股
                     </button>
                     <button
                       type="button"
-                      onClick={() => toggleWatchlist(hit.stock)}
+                      onClick={() => setPoolHit(hit)}
                       className="rounded-lg border border-white/10 px-2 py-1 text-[10px] text-slate-400"
                     >
-                      {isWatched(hit.stock.code) ? "已自选" : "加自选"}
+                      {isWatched(hit.stock.code) ? "已入池" : "入池"}
                     </button>
                   </div>
                 </motion.div>
@@ -406,6 +407,14 @@ export function ScreenPage() {
             </div>
           )}
         </section>
+      )}
+
+      {poolHit && (
+        <AddToPoolModal
+          stock={poolHit.stock}
+          defaultGroupId="g_buy"
+          onClose={() => setPoolHit(null)}
+        />
       )}
     </div>
   );

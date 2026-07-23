@@ -354,6 +354,34 @@ pub fn save_watchlist(app: AppHandle, items: Vec<Stock>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn save_pool(
+    app: AppHandle,
+    groups: Vec<crate::user_store::PoolGroup>,
+    items: Vec<crate::user_store::PoolItem>,
+) -> Result<(), String> {
+    let store = user_store(&app)?;
+    store.save_pool(&groups, &items)
+}
+
+#[tauri::command]
+pub fn save_holdings(
+    app: AppHandle,
+    items: Vec<crate::user_store::Holding>,
+) -> Result<(), String> {
+    let store = user_store(&app)?;
+    store.save_holdings(&items)
+}
+
+#[tauri::command]
+pub fn save_journal_entries(
+    app: AppHandle,
+    entries: Vec<crate::user_store::JournalEntry>,
+) -> Result<(), String> {
+    let store = user_store(&app)?;
+    store.save_journal(&entries)
+}
+
+#[tauri::command]
 pub fn save_strategy_map(
     app: AppHandle,
     map: std::collections::HashMap<String, strategy::StrategyCompose>,

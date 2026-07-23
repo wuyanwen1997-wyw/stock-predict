@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { cn, formatPct, formatPrice, marketLabel } from "@/lib/utils";
 import { useStockStore } from "@/stores/stockStore";
 import type { Stock } from "@/types";
+import { AddToPoolModal } from "@/components/AddToPoolModal";
 
 /** Preferred board order (Tonghuashun-like). */
 const BOARD_ORDER = [
@@ -35,7 +36,6 @@ export function HomePage() {
   const searching = useStockStore((s) => s.searching);
   const watchlist = useStockStore((s) => s.watchlist);
   const selectStock = useStockStore((s) => s.selectStock);
-  const toggleWatchlist = useStockStore((s) => s.toggleWatchlist);
   const setSearchQuery = useStockStore((s) => s.setSearchQuery);
   const runSearch = useStockStore((s) => s.runSearch);
   const clearSearch = useStockStore((s) => s.clearSearch);
@@ -43,6 +43,7 @@ export function HomePage() {
   const navigate = useNavigate();
 
   const [board, setBoard] = useState<string>("热门");
+  const [poolStock, setPoolStock] = useState<Stock | null>(null);
 
   const boards = useMemo(() => {
     const present = new Set(stocks.map((s) => s.sector).filter(Boolean));
@@ -67,7 +68,7 @@ export function HomePage() {
 
   const onPick = (stock: Stock) => {
     selectStock(stock);
-    navigate("/predict");
+    navigate(`/stock/${stock.code}`);
   };
 
   if (loading) {
@@ -90,6 +91,13 @@ export function HomePage() {
           >
             刷新
           </button>
+        </div>
+
+        <div className="flex gap-1.5 overflow-x-auto [scrollbar-width:none]">
+          <LinkChip to="/screen" label="盘前选股" />
+          <LinkChip to="/pool" label="盘中看池" />
+          <LinkChip to="/review" label="盘后复盘" />
+          <LinkChip to="/compare" label="多股对比" />
         </div>
 
         <div className="flex gap-2">
@@ -223,12 +231,12 @@ export function HomePage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => toggleWatchlist(stock)}
+                      onClick={() => setPoolStock(stock)}
                       className={cn(
                         "shrink-0 px-1 text-sm",
                         starred ? "text-amber-400" : "text-slate-600",
                       )}
-                      aria-label={starred ? "取消自选" : "加入自选"}
+                      aria-label={starred ? "已在关注" : "入池"}
                     >
                       {starred ? "★" : "☆"}
                     </button>
@@ -239,6 +247,21 @@ export function HomePage() {
           </ul>
         )}
       </div>
+
+      {poolStock && (
+        <AddToPoolModal stock={poolStock} onClose={() => setPoolStock(null)} />
+      )}
     </div>
+  );
+}
+
+function LinkChip({ to, label }: { to: string; label: string }) {
+  return (
+    <Link
+      to={to}
+      className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] text-slate-300"
+    >
+      {label}
+    </Link>
   );
 }

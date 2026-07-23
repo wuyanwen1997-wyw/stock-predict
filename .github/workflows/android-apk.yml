@@ -152,14 +152,22 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist-apk
+          VERSION="$(node -p "require('./package.json').version")"
           mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' ! -name '*-aligned.apk' | sort)
           if [ ${#apks[@]} -eq 0 ]; then
             echo "No APK found under gen/android outputs" >&2
             exit 1
           fi
-          for f in "${apks[@]}"; do
-            cp -v "$f" "dist-apk/$(basename "$f")"
-          done
+          # 安装包文件名带版本号，便于与 main 线产物区分
+          if [ ${#apks[@]} -eq 1 ]; then
+            cp -v "${apks[0]}" "dist-apk/stock-predict-${VERSION}-arm64.apk"
+          else
+            i=0
+            for f in "${apks[@]}"; do
+              i=$((i + 1))
+              cp -v "$f" "dist-apk/stock-predict-${VERSION}-arm64-${i}.apk"
+            done
+          fi
           ls -lah dist-apk
 
       - name: Upload APK artifact

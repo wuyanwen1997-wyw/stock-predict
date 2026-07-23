@@ -14,7 +14,10 @@ use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
-pub use schema::CURRENT_SCHEMA_VERSION;
+pub use schema::{
+    CURRENT_SCHEMA_VERSION, GROUP_BUY, GROUP_HOLDINGS_MIRROR, GROUP_OBSERVE, GROUP_REMOVED,
+    GROUP_WATCH,
+};
 
 const META_SCHEMA: &str = "schema_version";
 const META_LS_MIGRATED: &str = "localstorage_migrated";
@@ -41,12 +44,77 @@ pub struct UserSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+pub struct PoolGroup {
+    pub id: String,
+    pub name: String,
+    pub sort_order: i64,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolItem {
+    pub code: String,
+    pub group_id: String,
+    pub name: String,
+    pub market: String,
+    pub sector: String,
+    pub sort_order: i64,
+    #[serde(default = "default_extra_json")]
+    pub extra_json: String,
+}
+
+fn default_extra_json() -> String {
+    "{}".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Holding {
+    pub code: String,
+    pub name: String,
+    pub market: String,
+    pub sector: String,
+    pub cost: f64,
+    pub qty: f64,
+    pub buy_date: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalEntry {
+    pub id: String,
+    pub date: String,
+    #[serde(default)]
+    pub code: Option<String>,
+    pub body: String,
+    #[serde(default = "default_extra_json")]
+    pub extra_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct UserDataSnapshot {
+    #[serde(default)]
     pub watchlist: Vec<Stock>,
+    #[serde(default)]
     pub strategy_map: HashMap<String, StrategyCompose>,
+    #[serde(default)]
     pub settings: UserSettings,
+    #[serde(default)]
     pub monitor_rules: Vec<MonitorRule>,
+    #[serde(default)]
     pub monitor_alerts: Vec<MonitorAlert>,
+    #[serde(default)]
+    pub pool_groups: Vec<PoolGroup>,
+    #[serde(default)]
+    pub pool_items: Vec<PoolItem>,
+    #[serde(default)]
+    pub holdings: Vec<Holding>,
+    #[serde(default)]
+    pub journal_entries: Vec<JournalEntry>,
     pub schema_version: i64,
     pub localstorage_migrated: bool,
 }
@@ -119,45 +187,139 @@ impl UserStore {
 
     pub fn load(&self) -> Result<UserDataSnapshot, String> {
         let conn = self.lock()?;
+        let pool_groups = load_pool_groups(&conn)?;
+        let pool_items = load_pool_items(&conn)?;
+        let watchlist = {
+            let from_pool = pool_items_to_stocks(&pool_items, GROUP_WATCH);
+            if !from_pool.is_empty() {
+                from_pool
+            } else {
+                load_watchlist_table(&conn)?
+            }
+        };
         Ok(UserDataSnapshot {
-            watchlist: load_watchlist(&conn)?,
+            watchlist,
             strategy_map: load_strategy_map(&conn)?,
             settings: load_settings(&conn)?,
             monitor_rules: load_monitor_rules(&conn)?,
             monitor_alerts: load_monitor_alerts(&conn)?,
+            pool_groups,
+            pool_items,
+            holdings: load_holdings(&conn)?,
+            journal_entries: load_journal_entries(&conn)?,
             schema_version: meta_i64(&conn, META_SCHEMA)?.unwrap_or(CURRENT_SCHEMA_VERSION),
             localstorage_migrated: meta_bool(&conn, META_LS_MIGRATED)?.unwrap_or(false),
         })
     }
 
+    /// 兼容旧 API：写入「关注」分组（`g_watch`），不再改写 watchlist 表。
     pub fn save_watchlist(&self, items: &[Stock]) -> Result<(), String> {
+        let pool_items: Vec<PoolItem> = items
+            .iter()
+            .enumerate()
+            .map(|(i, s)| PoolItem {
+                code: s.code.clone(),
+                group_id: GROUP_WATCH.to_string(),
+                name: s.name.clone(),
+                market: s.market.clone(),
+                sector: s.sector.clone(),
+                sort_order: i as i64,
+                extra_json: serde_json::json!({
+                    "price": s.price,
+                    "change_pct": s.change_pct,
+                    "is_hot": s.is_hot,
+                })
+                .to_string(),
+            })
+            .collect();
         let conn = self.lock()?;
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("事务失败: {e}"))?;
-        tx.execute("DELETE FROM watchlist", [])
-            .map_err(|e| format!("清空自选失败: {e}"))?;
-        for (i, s) in items.iter().enumerate() {
-            let extra = serde_json::json!({
-                "price": s.price,
-                "change_pct": s.change_pct,
-                "is_hot": s.is_hot,
-            });
-            tx.execute(
-                "INSERT INTO watchlist(code, name, market, sector, sort_order, extra_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    s.code,
-                    s.name,
-                    s.market,
-                    s.sector,
-                    i as i64,
-                    extra.to_string()
-                ],
-            )
-            .map_err(|e| format!("写入自选失败: {e}"))?;
+        schema::seed_default_groups(&tx)?;
+        tx.execute(
+            "DELETE FROM pool_items WHERE group_id = ?1",
+            params![GROUP_WATCH],
+        )
+        .map_err(|e| format!("清空关注分组失败: {e}"))?;
+        for item in &pool_items {
+            insert_pool_item(&tx, item)?;
         }
         tx.commit().map_err(|e| format!("提交自选失败: {e}"))?;
+        Ok(())
+    }
+
+    pub fn save_pool(&self, groups: &[PoolGroup], items: &[PoolItem]) -> Result<(), String> {
+        let conn = self.lock()?;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("事务失败: {e}"))?;
+        tx.execute("DELETE FROM pool_items", [])
+            .map_err(|e| format!("清空股票池条目失败: {e}"))?;
+        tx.execute("DELETE FROM pool_groups", [])
+            .map_err(|e| format!("清空股票池分组失败: {e}"))?;
+        if groups.is_empty() {
+            schema::seed_default_groups(&tx)?;
+        } else {
+            for g in groups {
+                tx.execute(
+                    "INSERT INTO pool_groups(id, name, sort_order, kind) VALUES (?1, ?2, ?3, ?4)",
+                    params![g.id, g.name, g.sort_order, g.kind],
+                )
+                .map_err(|e| format!("写入股票池分组失败: {e}"))?;
+            }
+        }
+        for item in items {
+            insert_pool_item(&tx, item)?;
+        }
+        tx.commit().map_err(|e| format!("提交股票池失败: {e}"))?;
+        Ok(())
+    }
+
+    pub fn save_holdings(&self, items: &[Holding]) -> Result<(), String> {
+        let conn = self.lock()?;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("事务失败: {e}"))?;
+        tx.execute("DELETE FROM holdings", [])
+            .map_err(|e| format!("清空持仓失败: {e}"))?;
+        for h in items {
+            tx.execute(
+                "INSERT INTO holdings(code, name, market, sector, cost, qty, buy_date, note)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    h.code,
+                    h.name,
+                    h.market,
+                    h.sector,
+                    h.cost,
+                    h.qty,
+                    h.buy_date,
+                    h.note
+                ],
+            )
+            .map_err(|e| format!("写入持仓失败: {e}"))?;
+        }
+        tx.commit().map_err(|e| format!("提交持仓失败: {e}"))?;
+        Ok(())
+    }
+
+    pub fn save_journal(&self, entries: &[JournalEntry]) -> Result<(), String> {
+        let conn = self.lock()?;
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("事务失败: {e}"))?;
+        tx.execute("DELETE FROM journal_entries", [])
+            .map_err(|e| format!("清空复盘失败: {e}"))?;
+        for e in entries {
+            tx.execute(
+                "INSERT INTO journal_entries(id, date, code, body, extra_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![e.id, e.date, e.code, e.body, e.extra_json],
+            )
+            .map_err(|e| format!("写入复盘失败: {e}"))?;
+        }
+        tx.commit().map_err(|e| format!("提交复盘失败: {e}"))?;
         Ok(())
     }
 
@@ -304,7 +466,7 @@ impl UserStore {
     pub fn export_json(&self) -> Result<String, String> {
         let data = self.load()?;
         let bundle = ExportBundle {
-            format_version: 1,
+            format_version: CURRENT_SCHEMA_VERSION as u32,
             exported_at: chrono::Local::now().to_rfc3339(),
             data,
         };
@@ -333,7 +495,17 @@ impl UserStore {
     }
 
     fn replace_all(&self, data: &UserDataSnapshot) -> Result<(), String> {
-        self.save_watchlist(&data.watchlist)?;
+        self.save_pool(&data.pool_groups, &data.pool_items)?;
+        self.save_holdings(&data.holdings)?;
+        self.save_journal(&data.journal_entries)?;
+        // 旧 format（无 pool）或 pool 关注为空时，用 watchlist 回填 g_watch
+        let has_watch_pool = data
+            .pool_items
+            .iter()
+            .any(|i| i.group_id == GROUP_WATCH);
+        if !has_watch_pool && !data.watchlist.is_empty() {
+            self.save_watchlist(&data.watchlist)?;
+        }
         self.save_strategy_map(&data.strategy_map)?;
         self.save_settings(&data.settings)?;
         self.save_monitor_rules(&data.monitor_rules)?;
@@ -403,6 +575,12 @@ fn count_user_rows(conn: &Connection) -> Result<usize, String> {
     let w: i64 = conn
         .query_row("SELECT COUNT(*) FROM watchlist", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
+    let p: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pool_items", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let h: i64 = conn
+        .query_row("SELECT COUNT(*) FROM holdings", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
     let s: i64 = conn
         .query_row("SELECT COUNT(*) FROM strategy_compose", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
@@ -412,7 +590,7 @@ fn count_user_rows(conn: &Connection) -> Result<usize, String> {
     let r: i64 = conn
         .query_row("SELECT COUNT(*) FROM monitor_rules", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
-    Ok((w + s + k + r) as usize)
+    Ok((w + p + h + s + k + r) as usize)
 }
 
 fn meta_i64(conn: &Connection, key: &str) -> Result<Option<i64>, String> {
@@ -460,7 +638,7 @@ pub(crate) fn set_schema_version(conn: &Connection, v: i64) -> Result<(), String
     set_meta(conn, META_SCHEMA, &v.to_string())
 }
 
-fn load_watchlist(conn: &Connection) -> Result<Vec<Stock>, String> {
+fn load_watchlist_table(conn: &Connection) -> Result<Vec<Stock>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT code, name, market, sector, extra_json FROM watchlist ORDER BY sort_order ASC",
@@ -490,6 +668,154 @@ fn load_watchlist(conn: &Connection) -> Result<Vec<Stock>, String> {
         out.push(row.map_err(|e| e.to_string())?);
     }
     Ok(out)
+}
+
+fn load_pool_groups(conn: &Connection) -> Result<Vec<PoolGroup>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, sort_order, kind FROM pool_groups ORDER BY sort_order ASC, id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(PoolGroup {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                sort_order: r.get(2)?,
+                kind: r.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+fn load_pool_items(conn: &Connection) -> Result<Vec<PoolItem>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT code, group_id, name, market, sector, sort_order, extra_json
+             FROM pool_items ORDER BY group_id ASC, sort_order ASC, code ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(PoolItem {
+                code: r.get(0)?,
+                group_id: r.get(1)?,
+                name: r.get(2)?,
+                market: r.get(3)?,
+                sector: r.get(4)?,
+                sort_order: r.get(5)?,
+                extra_json: r.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+fn load_holdings(conn: &Connection) -> Result<Vec<Holding>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT code, name, market, sector, cost, qty, buy_date, note
+             FROM holdings ORDER BY buy_date ASC, code ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(Holding {
+                code: r.get(0)?,
+                name: r.get(1)?,
+                market: r.get(2)?,
+                sector: r.get(3)?,
+                cost: r.get(4)?,
+                qty: r.get(5)?,
+                buy_date: r.get(6)?,
+                note: r.get(7)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+fn load_journal_entries(conn: &Connection) -> Result<Vec<JournalEntry>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, date, code, body, extra_json
+             FROM journal_entries ORDER BY date DESC, id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(JournalEntry {
+                id: r.get(0)?,
+                date: r.get(1)?,
+                code: r.get(2)?,
+                body: r.get(3)?,
+                extra_json: r.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+fn insert_pool_item(conn: &Connection, item: &PoolItem) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO pool_items(code, group_id, name, market, sector, sort_order, extra_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            item.code,
+            item.group_id,
+            item.name,
+            item.market,
+            item.sector,
+            item.sort_order,
+            item.extra_json
+        ],
+    )
+    .map_err(|e| format!("写入股票池条目失败: {e}"))?;
+    Ok(())
+}
+
+fn pool_items_to_stocks(items: &[PoolItem], group_id: &str) -> Vec<Stock> {
+    let mut filtered: Vec<&PoolItem> = items
+        .iter()
+        .filter(|i| i.group_id == group_id)
+        .collect();
+    filtered.sort_by_key(|i| (i.sort_order, i.code.as_str()));
+    filtered
+        .into_iter()
+        .map(|i| {
+            let extra: Value =
+                serde_json::from_str(&i.extra_json).unwrap_or(Value::Object(Default::default()));
+            Stock {
+                code: i.code.clone(),
+                name: i.name.clone(),
+                market: i.market.clone(),
+                sector: i.sector.clone(),
+                price: extra.get("price").and_then(|v| v.as_f64()),
+                change_pct: extra.get("change_pct").and_then(|v| v.as_f64()),
+                is_hot: extra
+                    .get("is_hot")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            }
+        })
+        .collect()
 }
 
 fn load_strategy_map(conn: &Connection) -> Result<HashMap<String, StrategyCompose>, String> {

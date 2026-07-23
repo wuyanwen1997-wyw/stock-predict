@@ -255,3 +255,46 @@ export interface ScreenResult {
   summary: string;
   timed_out?: boolean;
 }
+
+/** 股票池分组（schema v2） */
+export interface PoolGroup {
+  id: string;
+  name: string;
+  sortOrder: number;
+  kind: string;
+}
+
+/** 池内标的 */
+export interface PoolItem {
+  code: string;
+  groupId: string;
+  name: string;
+  market: string;
+  sector: string;
+  sortOrder: number;
+  extraJson: string;
+}
+
+/** 本地持仓（schema v3）；现价/浮盈不入用户库 */
+export interface Holding {
+  code: string;
+  name: string;
+  market: string;
+  sector: string;
+  cost: number;
+  qty: number;
+  buyDate: string;
+  note: string;
+}
+
+/** 复盘笔记 */
+export interface JournalEntry {
+  id: string;
+  date: string;
+  code?: string | null;
+  body: string;
+  extraJson: string;
+}
+
+/** K 线窗格密度 */
+export type ChartDensity = "compact" | "standard" | "full";

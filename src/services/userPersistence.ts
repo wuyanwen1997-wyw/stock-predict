@@ -1,7 +1,16 @@
 /** 用户态持久化：Rust SQLite 为主，localStorage 仅作一次性迁移源。 */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { MonitorAlert, MonitorRule, Stock, StrategyCompose } from "@/types";
+import type {
+  Holding,
+  JournalEntry,
+  MonitorAlert,
+  MonitorRule,
+  PoolGroup,
+  PoolItem,
+  Stock,
+  StrategyCompose,
+} from "@/types";
 
 export type UserSettings = {
   lookbackDays?: number | null;
@@ -19,6 +28,10 @@ export type UserDataSnapshot = {
   settings: UserSettings;
   monitorRules: MonitorRule[];
   monitorAlerts: MonitorAlert[];
+  poolGroups: PoolGroup[];
+  poolItems: PoolItem[];
+  holdings: Holding[];
+  journalEntries: JournalEntry[];
   schemaVersion: number;
   localstorageMigrated: boolean;
 };
@@ -119,6 +132,21 @@ export async function loadUserData() {
 export async function saveWatchlist(items: Stock[]) {
   if (!persistenceReady) return;
   await invoke("save_watchlist", { items });
+}
+
+export async function savePool(groups: PoolGroup[], items: PoolItem[]) {
+  if (!persistenceReady) return;
+  await invoke("save_pool", { groups, items });
+}
+
+export async function saveHoldings(items: Holding[]) {
+  if (!persistenceReady) return;
+  await invoke("save_holdings", { items });
+}
+
+export async function saveJournalEntries(entries: JournalEntry[]) {
+  if (!persistenceReady) return;
+  await invoke("save_journal_entries", { entries });
 }
 
 export async function saveStrategyMap(map: Record<string, StrategyCompose>) {

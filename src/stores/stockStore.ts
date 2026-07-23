@@ -12,18 +12,34 @@ import {
 } from "@/services/api";
 import {
   bootstrapUserPersistence,
+  saveHoldings,
+  saveJournalEntries,
+  savePool,
   saveStrategyMap as persistStrategyMap,
   saveUserSettings,
   saveWatchlist as persistWatchlist,
   type UserDataSnapshot,
 } from "@/services/userPersistence";
 import { chartBarLimit } from "@/lib/klineData";
+import {
+  DEFAULT_POOL_GROUPS,
+  GROUP_HOLDINGS_MIRROR,
+  GROUP_REMOVED,
+  GROUP_WATCH,
+  holdingsMirrorItems,
+  poolItemFromStock,
+  watchlistFromPool,
+} from "@/lib/pool";
 import type {
   AlgorithmInfo,
   BacktestResult,
   BsMarker,
   DailyBar,
+  Holding,
+  JournalEntry,
   KlinePeriod,
+  PoolGroup,
+  PoolItem,
   PredictionResult,
   ScreenFilters,
   ScreenHit,
@@ -35,6 +51,8 @@ import type {
   StrategySourceInfo,
 } from "@/types";
 import { useMonitorStore } from "@/stores/monitorStore";
+
+const FIXED_POOL_GROUP_IDS = new Set(DEFAULT_POOL_GROUPS.map((g) => g.id));
 
 export type PredictMode = "daily" | "trend";
 
@@ -185,6 +203,10 @@ interface StockState {
   bsMarkers: BsMarker[];
   backtest: BacktestResult | null;
   watchlist: Stock[];
+  poolGroups: PoolGroup[];
+  poolItems: PoolItem[];
+  holdings: Holding[];
+  journalEntries: JournalEntry[];
   loading: boolean;
   predicting: boolean;
   loadingKlines: boolean;
@@ -217,6 +239,19 @@ interface StockState {
   runPrediction: () => Promise<void>;
   loadStockAnalysis: () => Promise<void>;
   toggleWatchlist: (stock: Stock) => void;
+  persistPoolState: (groups: PoolGroup[], items: PoolItem[]) => void;
+  addToPool: (stock: Stock, groupId: string) => void;
+  removeFromPool: (code: string, groupId: string) => void;
+  movePoolItem: (code: string, fromGroupId: string, toGroupId: string) => void;
+  upsertPoolGroup: (group: PoolGroup) => void;
+  removePoolGroup: (id: string) => void;
+  setHoldings: (next: Holding[]) => void;
+  upsertHolding: (holding: Holding) => void;
+  removeHolding: (code: string) => void;
+  addJournalEntry: (entry: JournalEntry) => void;
+  updateJournalEntry: (entry: JournalEntry) => void;
+  removeJournalEntry: (id: string) => void;
+  setJournalEntries: (entries: JournalEntry[]) => void;
   setSearchQuery: (query: string) => void;
   runSearch: () => Promise<void>;
   clearSearch: () => void;
@@ -267,6 +302,10 @@ export const useStockStore = create<StockState>((set, get) => ({
   bsMarkers: [],
   backtest: null,
   watchlist: [],
+  poolGroups: DEFAULT_POOL_GROUPS,
+  poolItems: [],
+  holdings: [],
+  journalEntries: [],
   composePanelOpen: true,
   composePanelHeight: 232,
   loading: false,
@@ -336,7 +375,19 @@ export const useStockStore = create<StockState>((set, get) => ({
       }
 
       const known = [...stocks, ...hotStocksFromApi];
-      let watchlist = (userSnap?.watchlist ?? []).map((s) => enrichStock(s, known));
+      const poolGroups =
+        userSnap?.poolGroups && userSnap.poolGroups.length > 0
+          ? userSnap.poolGroups
+          : DEFAULT_POOL_GROUPS;
+      const poolItems = userSnap?.poolItems ?? [];
+      const holdings = userSnap?.holdings ?? [];
+      const journalEntries = userSnap?.journalEntries ?? [];
+
+      const watchFromPool = watchlistFromPool(poolItems);
+      let watchlist =
+        watchFromPool.length > 0
+          ? watchFromPool.map((s) => enrichStock(s, known))
+          : (userSnap?.watchlist ?? []).map((s) => enrichStock(s, known));
       watchlist = await enrichSparseWatchlist(watchlist);
       const strategyMap = normalizeStrategyMap(userSnap?.strategyMap ?? {});
 
@@ -385,6 +436,10 @@ export const useStockStore = create<StockState>((set, get) => ({
         strategyMap,
         selectedStock,
         watchlist,
+        poolGroups,
+        poolItems,
+        holdings,
+        journalEntries,
         lookbackDays,
         predictMode,
         horizonDays,
@@ -425,9 +480,24 @@ export const useStockStore = create<StockState>((set, get) => ({
         ? settings.lookbackDays
         : get().lookbackDays;
 
+    const poolGroups =
+      snap.poolGroups && snap.poolGroups.length > 0
+        ? snap.poolGroups
+        : DEFAULT_POOL_GROUPS;
+    const poolItems = snap.poolItems ?? [];
+    const holdings = snap.holdings ?? [];
+    const journalEntries = snap.journalEntries ?? [];
+    const watchFromPool = watchlistFromPool(poolItems);
+    const watchlist =
+      watchFromPool.length > 0 ? watchFromPool : (snap.watchlist ?? []);
+
     hydrateMonitor(snap);
     set({
-      watchlist: snap.watchlist ?? [],
+      watchlist,
+      poolGroups,
+      poolItems,
+      holdings,
+      journalEntries,
       strategyMap,
       lookbackDays: lookback,
       predictMode,
@@ -648,12 +718,166 @@ export const useStockStore = create<StockState>((set, get) => ({
   },
 
   toggleWatchlist: (stock) => {
-    const exists = get().watchlist.some((s) => s.code === stock.code);
-    const next = exists
-      ? get().watchlist.filter((s) => s.code !== stock.code)
-      : [...get().watchlist, stock];
-    void persistWatchlist(next).catch((e) => console.warn("保存自选失败", e));
-    set({ watchlist: next });
+    const items = get().poolItems;
+    const inWatch = items.some(
+      (i) => i.groupId === GROUP_WATCH && i.code === stock.code,
+    );
+    const nextItems = inWatch
+      ? items.filter(
+          (i) => !(i.groupId === GROUP_WATCH && i.code === stock.code),
+        )
+      : [...items, poolItemFromStock(stock, GROUP_WATCH, items.length)];
+    get().persistPoolState(get().poolGroups, nextItems);
+  },
+
+  persistPoolState: (groups, items) => {
+    const holdings = get().holdings;
+    const withoutMirror = items.filter(
+      (i) => i.groupId !== GROUP_HOLDINGS_MIRROR,
+    );
+    const withMirror = [...withoutMirror, ...holdingsMirrorItems(holdings)];
+    void savePool(groups, withMirror).catch((e) =>
+      console.warn("保存股票池失败", e),
+    );
+    set({
+      poolGroups: groups,
+      poolItems: withMirror,
+      watchlist: watchlistFromPool(withMirror),
+    });
+  },
+
+  addToPool: (stock, groupId) => {
+    const items = get().poolItems;
+    const idx = items.findIndex(
+      (i) => i.groupId === groupId && i.code === stock.code,
+    );
+    let nextItems: PoolItem[];
+    if (idx >= 0) {
+      const prev = items[idx];
+      nextItems = items.map((i, n) =>
+        n === idx ? poolItemFromStock(stock, groupId, prev.sortOrder) : i,
+      );
+    } else {
+      const sortOrder = items.filter((i) => i.groupId === groupId).length;
+      nextItems = [...items, poolItemFromStock(stock, groupId, sortOrder)];
+    }
+    get().persistPoolState(get().poolGroups, nextItems);
+  },
+
+  removeFromPool: (code, groupId) => {
+    const nextItems = get().poolItems.filter(
+      (i) => !(i.groupId === groupId && i.code === code),
+    );
+    get().persistPoolState(get().poolGroups, nextItems);
+  },
+
+  movePoolItem: (code, fromGroupId, toGroupId) => {
+    if (fromGroupId === toGroupId) return;
+    const items = get().poolItems;
+    const item = items.find(
+      (i) => i.groupId === fromGroupId && i.code === code,
+    );
+    if (!item) return;
+    const without = items.filter(
+      (i) => !(i.groupId === fromGroupId && i.code === code),
+    );
+    const existsInTo = without.some(
+      (i) => i.groupId === toGroupId && i.code === code,
+    );
+    const nextItems = existsInTo
+      ? without
+      : [
+          ...without,
+          {
+            ...item,
+            groupId: toGroupId,
+            sortOrder: without.filter((i) => i.groupId === toGroupId).length,
+          },
+        ];
+    get().persistPoolState(get().poolGroups, nextItems);
+  },
+
+  upsertPoolGroup: (group) => {
+    const groups = get().poolGroups;
+    const idx = groups.findIndex((g) => g.id === group.id);
+    const nextGroups =
+      idx >= 0
+        ? groups.map((g, i) => (i === idx ? group : g))
+        : [...groups, group];
+    get().persistPoolState(nextGroups, get().poolItems);
+  },
+
+  removePoolGroup: (id) => {
+    if (FIXED_POOL_GROUP_IDS.has(id)) return;
+    const nextGroups = get().poolGroups.filter((g) => g.id !== id);
+    const nextItems = get().poolItems.map((i) =>
+      i.groupId === id ? { ...i, groupId: GROUP_REMOVED } : i,
+    );
+    get().persistPoolState(nextGroups, nextItems);
+  },
+
+  setHoldings: (next) => {
+    void saveHoldings(next).catch((e) => console.warn("保存持仓失败", e));
+    const { poolGroups, poolItems } = get();
+    const withoutMirror = poolItems.filter(
+      (i) => i.groupId !== GROUP_HOLDINGS_MIRROR,
+    );
+    const withMirror = [...withoutMirror, ...holdingsMirrorItems(next)];
+    void savePool(poolGroups, withMirror).catch((e) =>
+      console.warn("保存股票池失败", e),
+    );
+    set({
+      holdings: next,
+      poolItems: withMirror,
+      watchlist: watchlistFromPool(withMirror),
+    });
+  },
+
+  upsertHolding: (holding) => {
+    const holdings = get().holdings;
+    const idx = holdings.findIndex((h) => h.code === holding.code);
+    const next =
+      idx >= 0
+        ? holdings.map((h, i) => (i === idx ? holding : h))
+        : [...holdings, holding];
+    get().setHoldings(next);
+  },
+
+  removeHolding: (code) => {
+    get().setHoldings(get().holdings.filter((h) => h.code !== code));
+  },
+
+  addJournalEntry: (entry) => {
+    const next = [...get().journalEntries, entry];
+    void saveJournalEntries(next).catch((e) =>
+      console.warn("保存复盘失败", e),
+    );
+    set({ journalEntries: next });
+  },
+
+  updateJournalEntry: (entry) => {
+    const next = get().journalEntries.map((e) =>
+      e.id === entry.id ? entry : e,
+    );
+    void saveJournalEntries(next).catch((e) =>
+      console.warn("保存复盘失败", e),
+    );
+    set({ journalEntries: next });
+  },
+
+  removeJournalEntry: (id) => {
+    const next = get().journalEntries.filter((e) => e.id !== id);
+    void saveJournalEntries(next).catch((e) =>
+      console.warn("保存复盘失败", e),
+    );
+    set({ journalEntries: next });
+  },
+
+  setJournalEntries: (entries) => {
+    void saveJournalEntries(entries).catch((e) =>
+      console.warn("保存复盘失败", e),
+    );
+    set({ journalEntries: entries });
   },
 
   setSearchQuery: (query) => {
